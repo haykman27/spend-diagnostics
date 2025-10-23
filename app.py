@@ -10,7 +10,7 @@ st.title("Procurement Diagnostics — Full (Auto FX → EUR)")
 st.caption("1 upload • auto-map columns • ECB FX to EUR • robust spend • category savings • supplier drill-down • VAVE ideas • sanity checks")
 
 uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
-BASE = "EUR"  # fixed base for simplicity
+BASE = "EUR"  # fixed base
 
 # ================= Currency helpers =================
 CURRENCY_SYMBOL_MAP = {
@@ -25,30 +25,61 @@ ISO_3 = {
 }
 
 def detect_iso_from_text(text: str):
-    if text is None or (isinstance(text, float) and np.isnan(text)): return None
+    """Detect ISO-3 currency code from free text/symbols/aliases."""
+    if text is None or (isinstance(text, float) and np.isnan(text)):
+        return None
     s = str(text).strip()
-    if not s: return None
-    m = re.search(r"\b([A-Za-z]{3})\b", s.upper())
-    if m and m.group(1) in ISO_3:
-        return m.group(1)
+    if not s:
+        return None
+    s_up = s.upper()
+
+    # Common aliases not in ECB 3-letter text
+    alias = {
+        "RMB": "CNY", "YUAN": "CNY", "CN¥": "CNY", "元": "CNY",
+        "ZŁ": "PLN", "ZL": "PLN",
+        "KČ": "CZK",
+        "LEI": "RON",
+        "RUR": "RUB", "РУБ": "RUB",
+        # WARNING: 'KR' is ambiguous (SEK/NOK/DKK); map only if your data uses it consistently.
+    }
+
+    # Explicit 3-letter code in text
+    m = re.search(r"\b([A-Z]{3})\b", s_up)
+    if m:
+        code = m.group(1)
+        if code in ISO_3:
+            return code
+        if code in alias:
+            return alias[code]
+
+    # Alias keywords anywhere
+    for k, v in alias.items():
+        if k in s_up:
+            return v
+
+    # Symbols
     for sym in sorted(CURRENCY_SYMBOL_MAP.keys(), key=len, reverse=True):
         if sym in s:
             return CURRENCY_SYMBOL_MAP[sym]
-    m2 = re.match(r"^([A-Za-z]{3})\b", s.upper())
-    if m2 and m2.group(1) in ISO_3: return m2.group(1)
-    m3 = re.search(r"\b([A-Za-z]{3})$", s.upper())
-    if m3 and m3.group(1) in ISO_3: return m3.group(1)
+
+    # Leading/trailing codes
+    m2 = re.match(r"^([A-Z]{3})\b", s_up)
+    if m2 and (m2.group(1) in ISO_3 or m2.group(1) in alias):
+        return m2.group(1) if m2.group(1) in ISO_3 else alias[m2.group(1)]
+    m3 = re.search(r"\b([A-Z]{3})$", s_up)
+    if m3 and (m3.group(1) in ISO_3 or m3.group(1) in alias):
+        return m3.group(1) if m3.group(1) in ISO_3 else alias[m3.group(1)]
     return None
 
 def parse_price_to_float(x):
-    """Parse '€1,234.56', '1.234,56 €', 'USD 1,200', etc."""
+    """Parse prices like '€1,234.56', '1.234,56 €', 'USD 1,200' into float."""
     if pd.isna(x): return np.nan
     if isinstance(x, (int, float)): return float(x)
     s = re.sub(r"[^\d,\.\-]", "", str(x))
     if "," in s and "." in s:
         s = s.replace(",", "")
     else:
-        if "," in s and s.count(",")==1 and len(s.split(",")[-1]) in (2,3):
+        if "," in s and s.count(",") == 1 and len(s.split(",")[-1]) in (2, 3):
             s = s.replace(",", ".")
         else:
             s = s.replace(",", "")
@@ -57,7 +88,7 @@ def parse_price_to_float(x):
     except:
         return np.nan
 
-# ================= Auto-mapper (kept & improved) =================
+# ================= Auto-mapper =================
 def normalize_headers(cols):
     return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 
@@ -83,7 +114,6 @@ def detect_columns(df):
     back = {n: orig for n, orig in zip(norm, cols)}
     suggestions = {k: (None, 0) for k in TARGETS.keys()}
 
-    # generic fuzzy suggestions
     for field, synonyms in TARGETS.items():
         best = None; best_score = -1
         for syn in synonyms:
@@ -93,9 +123,8 @@ def detect_columns(df):
         if best is not None:
             suggestions[field] = (back[best], best_score)
 
-    # Prefer "Item family" / "Item family group" as Category if present
-    priority = ["item family group", "item family"]
-    for pr in priority:
+    # Prefer "Item family" / "Item family group" as Category
+    for pr in ["item family group", "item family"]:
         for n, orig in zip(norm, cols):
             if n == pr:
                 suggestions["category"] = (orig, 100)
@@ -110,28 +139,25 @@ def detect_columns(df):
 
 def apply_mapping(df, suggestions):
     mapping = {k: (suggestions[k][0] if k in suggestions else None) for k in TARGETS.keys()}
-    # Validate required
     missing = [k for k in REQUIRED if not mapping.get(k)]
     if missing:
         st.error("Missing required field(s): " + ", ".join(missing) + ". Please include columns like supplier, quantity, currency, uom and category/item family.")
         st.stop()
 
-    # Rename to canonical names
     df2 = df.rename(columns={v:k for k,v in mapping.items() if v}).copy()
 
-    # Numeric coercion
+    # numeric coercion
     if "unit_price" in df2.columns: df2["unit_price"] = df2["unit_price"].apply(parse_price_to_float)
     if "amount"     in df2.columns: df2["amount"]     = df2["amount"].apply(parse_price_to_float)
     if "quantity"   in df2.columns: df2["quantity"]   = pd.to_numeric(df2["quantity"], errors="coerce")
 
-    # Derive unit_price if missing
     if "unit_price" not in df2.columns and {"amount","quantity"}.issubset(df2.columns):
         with np.errstate(divide='ignore', invalid='ignore'):
             df2["unit_price"] = df2["amount"] / df2["quantity"]
 
     df2["quantity"] = df2.get("quantity", 1).fillna(1)
 
-    # Supplier canonicalization (light dedupe)
+    # Supplier canonicalization (light)
     if "supplier" in df2.columns:
         vals = df2["supplier"].fillna("").astype(str).str.strip()
         canon = {}
@@ -164,10 +190,10 @@ def merge_fx(df, fx):
         st.error("No currency column detected. Include a currency column or currency symbols in price text.")
         st.stop()
 
-    # Currency detection per row
+    # currency per row
     df["currency_iso"] = df["currency"].astype(str).apply(lambda x: detect_iso_from_text(x) or BASE)
 
-    # If unit_price text includes symbol/code, refine currency and parse numeric
+    # refine from unit_price text if needed
     if "unit_price" in df.columns:
         is_text = df["unit_price"].apply(lambda x: isinstance(x, str))
         if is_text.any():
@@ -178,7 +204,7 @@ def merge_fx(df, fx):
             )
             df.loc[idxs, "unit_price"] = df.loc[idxs, "unit_price"].apply(parse_price_to_float)
 
-    # Merge FX by date (last-known rate on/before date), else latest
+    # merge FX
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         out = []
@@ -203,23 +229,21 @@ def merge_fx(df, fx):
         st.warning(f"{miss} row(s) have currencies not in ECB table. Treating them as EUR (rate=1.0).")
         df["rate_to_eur"] = df["rate_to_eur"].fillna(1.0)
 
-    # Normalized fields
     df["unit_price_eur"] = df.get("unit_price", np.nan) * df["rate_to_eur"]
     df["amount_eur"]     = pd.to_numeric(df.get("amount"), errors="coerce") * df["rate_to_eur"]
     df["quantity_norm"]  = pd.to_numeric(df.get("quantity"), errors="coerce").fillna(1)
     return df
 
-# ================= Savings library & VAVE ideas (kept) =================
-# Heuristic, adjustable per client
+# ================= Savings library & VAVE ideas =================
 SAVINGS_LIBRARY = {
     "stampings": (0.10, 0.15),
     "tubes": (0.08, 0.14),
-    "machin": (0.07, 0.14),    # machining
-    "cast": (0.06, 0.12),      # castings
-    "forg": (0.05, 0.10),      # forgings
-    "plast": (0.08, 0.18),     # plastics/injection molding
+    "machin": (0.07, 0.14),
+    "cast": (0.06, 0.12),
+    "forg": (0.05, 0.10),
+    "plast": (0.08, 0.18),
     "fasten": (0.05, 0.10),
-    "bear": (0.04, 0.08),      # bearings
+    "bear": (0.04, 0.08),
     "pcb": (0.06, 0.12), "electro": (0.06, 0.12), "electronics": (0.06, 0.12),
     "cable": (0.06, 0.12), "wire": (0.06, 0.12),
     "packag": (0.05, 0.15),
@@ -297,7 +321,7 @@ def vave_ideas_for_category(cat: str):
         "Bundle volumes; reduce supplier count; **negotiate**."
     ]
 
-# ================= Analytics: outlier flags (kept) =================
+# ================= Outlier baseline (kept) =================
 def add_baseline_and_flags(df, iqr_multiplier=1.5, baseline="P50"):
     has_sku = "sku" in df.columns
     key = ["category"] + (["sku"] if has_sku else [])
@@ -321,15 +345,14 @@ def add_baseline_and_flags(df, iqr_multiplier=1.5, baseline="P50"):
 
 # ================= Main flow =================
 if uploaded:
-    # Read file
+    # Read
     raw = pd.read_excel(uploaded)
     raw.columns = [str(c) for c in raw.columns]
 
-    # Auto-detect + mapping
+    # Auto-map & clean
     suggestions = detect_columns(raw)
     df = apply_mapping(raw, suggestions)
 
-    # Ensure unit price exists after fallback
     if "unit_price" not in df.columns or df["unit_price"].isna().all():
         st.error("Could not derive unit price. Ensure you have either a unit price column, or amount + quantity.")
         st.stop()
@@ -339,15 +362,25 @@ if uploaded:
         fx = load_ecb_rates()
         df = merge_fx(df, fx)
 
-    # ---------- Robust spend calculation ----------
-    # Prefer provided line total (amount) when available; fallback to unit_price * quantity
-    df["_spend_eur"] = np.where(
-        df["amount_eur"].notna(),
-        df["amount_eur"],
-        df["unit_price_eur"] * df["quantity_norm"]
-    ).fillna(0.0)
+    # Show unknown currency strings (debug)
+    unknown = (
+        df.loc[df["rate_to_eur"].eq(1.0) & ~df["currency_iso"].eq("EUR"), ["currency","currency_iso"]]
+          .assign(sample=lambda x: x["currency"].astype(str).str.slice(0,20))
+          .value_counts(subset=["currency","currency_iso"], sort=True)
+          .reset_index(name="rows")
+    )
+    if len(unknown):
+        st.warning("Unrecognized/non-ECB currencies (treated as EUR=1.0). Map these in the detector if needed:")
+        st.dataframe(unknown.head(50), use_container_width=True)
 
-    # ---------- Sanity checks ----------
+    # Robust spend (fixed .where/.fillna)
+    df["_spend_eur"] = df["amount_eur"].where(
+        df["amount_eur"].notna(),
+        df["unit_price_eur"] * df["quantity_norm"]
+    )
+    df["_spend_eur"] = df["_spend_eur"].fillna(0.0)
+
+    # Sanity checks
     suspicious_suppliers = (
         df.groupby("supplier_canon", dropna=False)
           .agg(spend_eur=("_spend_eur","sum"), lines=("po_id","count"))
@@ -363,22 +396,19 @@ if uploaded:
         msgs.append("Many unit prices are under €0.05 — decimal or pricing unit may be off.")
     if decimal_confusion_hint:
         msgs.append("Detected values like '1,234' that may be thousands separators — check decimal conventions.")
-
     if msgs:
         st.warning("Sanity checks:\n- " + "\n- ".join(msgs))
 
-    # ---------- Outlier baseline (kept for future) ----------
+    # Baseline + flags (kept)
     df = add_baseline_and_flags(df, iqr_multiplier=1.5, baseline="P50")
 
-    # ---------- VIEW 1: Categories with typical savings ----------
-    df["_spend_eur"] = df["_spend_eur"].fillna(0.0)
+    # VIEW 1: Categories with typical savings
     cat = df.groupby("category", dropna=False).agg(
         spend_eur=("_spend_eur","sum"),
         lines=("po_id","count"),
         suppliers=("supplier_canon", pd.Series.nunique)
     ).reset_index()
 
-    # Typical savings ranges and € potentials
     ranges, buckets = [], []
     for cat_name in cat["category"]:
         rng, bucket = classify_category_for_savings(str(cat_name))
@@ -401,7 +431,7 @@ if uploaded:
         use_container_width=True
     )
 
-    # ---------- VIEW 2: Supplier drill-down ----------
+    # VIEW 2: Supplier drill-down
     st.subheader("2) Suppliers by Category")
     if len(cat):
         chosen_cat = st.selectbox("Choose category to drill down:", cat["category"].tolist())
@@ -418,7 +448,7 @@ if uploaded:
     else:
         st.info("No categories detected to drill down.")
 
-    # ---------- VIEW 3: Practical VAVE ideas (no clustering) ----------
+    # VIEW 3: VAVE ideas
     st.subheader("3) VAVE Ideas by Category (examples)")
     vave_rows = []
     for _, row in cat.iterrows():
@@ -428,7 +458,7 @@ if uploaded:
     vave_table = pd.DataFrame(vave_rows)
     st.dataframe(vave_table, use_container_width=True)
 
-    # ---------- Optional: Supplier debug tray ----------
+    # Supplier debug tray (optional)
     st.markdown("#### Debug a supplier (optional)")
     sup_to_debug = st.selectbox(
         "Pick a supplier to inspect line-level calculations:",
@@ -446,7 +476,7 @@ if uploaded:
             use_container_width=True
         )
 
-    # ---------- Download pack ----------
+    # Download pack
     st.markdown("#### Download pack (XLSX)")
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
