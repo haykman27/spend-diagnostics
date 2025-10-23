@@ -4,4 +4,3 @@ numpy>=1.26
 openpyxl>=3.1
 rapidfuzz>=3.9
 scikit-learn>=1.5
-plotly>=5.22
