@@ -1,8 +1,11 @@
-# Procurement Diagnostics — Final (Auto FX → EUR, sustainable spend detection)
-# - Keeps all features we built: auto-mapping, sustainable spend-detection, latest ECB FX, category savings,
-#   supplier drill-down, VAVE ideas, sanity checks, debug tray, download pack.
-# - NEW: Robust ECB loader using CSV (no JSONDecodeError). Uses latest available rates.
-# - Displays spend as "€ 1,234 k" with interactive tables.
+# Procurement Diagnostics — Final (Auto FX → EUR, sustainable spend detection, interactive tables)
+# - Auto-detects key columns (incl. Item family/Group for Category)
+# - Robust decimal parsing (comma/dot)
+# - Sustainable spend-column detection (many header variants + numeric sanity)
+# - Latest ECB FX via CSV (robust) → converts all values to EUR
+# - Category savings, supplier drill-down, VAVE ideas, sanity checks, outlier flags
+# - Download pack
+# - All spends shown as "€ 1,234 k" (no decimals) via Streamlit column_config
 
 import io, re
 import numpy as np
@@ -15,7 +18,7 @@ st.set_page_config(page_title="Procurement Diagnostics — Final", layout="wide"
 st.title("Procurement Diagnostics — Final (Auto FX → EUR)")
 st.caption(
     "Upload your Excel. The app auto-detects key columns, fixes decimals, detects the spend column, "
-    "converts to EUR with latest ECB rates, and shows interactive diagnostics in € k."
+    "converts to EUR with the latest ECB rates, and shows interactive diagnostics in € k."
 )
 uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
 BASE = "EUR"
@@ -29,17 +32,15 @@ def parse_price_to_float(x):
     if pd.isna(x): return np.nan
     if isinstance(x, (int, float)): return float(x)
     s = str(x)
-    # Keep only digits, dot, comma, minus
-    s = re.sub(r"[^\d,\.\-]", "", s)
-    # If both separators exist, assume comma is thousands sep: drop commas
+    s = re.sub(r"[^\d,\.\-]", "", s)  # keep only digits, . , -
     if "," in s and "." in s:
+        # both present → treat comma as thousands sep
         s = s.replace(",", "")
     else:
-        # If there's a single comma and it looks like decimal comma, convert to dot
+        # single comma that looks like decimal comma → convert to dot
         if "," in s and s.count(",")==1 and len(s.split(",")[-1]) in (2,3):
             s = s.replace(",", ".")
         else:
-            # Otherwise treat commas as thousands separators
             s = s.replace(",", "")
     try:
         return float(s)
@@ -63,16 +64,13 @@ def detect_iso_from_text(text: str):
     if not s: return None
     alias = {"RMB":"CNY","YUAN":"CNY","CN¥":"CNY","元":"CNY","ZŁ":"PLN","ZL":"PLN","KČ":"CZK",
              "LEI":"RON","RUR":"RUB","РУБ":"RUB"}
-    # explicit 3-letter code
     m = re.search(r"\b([A-Z]{3})\b", s)
     if m:
         c = m.group(1)
         if c in ISO_3: return c
         if c in alias: return alias[c]
-    # aliases embedded
     for k,v in alias.items():
         if k in s: return v
-    # symbols
     for sym in sorted(CURRENCY_SYMBOL_MAP.keys(), key=len, reverse=True):
         if sym in s: return CURRENCY_SYMBOL_MAP[sym]
     return None
@@ -110,7 +108,11 @@ def apply_fx_latest(df, fx):
 TARGETS = {
     "po_id":       ["po","po id","po number","purchase order","order id","document","line id","invoice line id"],
     "date":        ["date","posting date","order date","document date","invoice date"],
-    "category":    ["category","commodity","spend category","material group","gl category","family","family group","group","item family","item family group"],
+    "category": [
+        "category","commodity","spend category","material group","material group desc",
+        "gl category","family","family group","group","sub category",
+        "item family","item family group","item group","procurement group","cluster"
+    ],
     "description": ["description","item","item description","material description","service description","short text","long text"],
     "supplier":    ["supplier","supplier name","vendor","vendor name","seller","payee"],
     "sku":         ["sku","material","material no","material number","item code","product code","part number","pn"],
@@ -119,7 +121,7 @@ TARGETS = {
     "quantity":    ["quantity","qty","order qty","qty ordered","units","volume"],
     "currency":    ["currency","ccy","curr","currency code","iso currency"]
 }
-REQUIRED_MIN = ["supplier","category","currency"]  # we’ll compute others if missing
+REQUIRED_MIN = ["supplier","category","currency"]
 
 def suggest_columns(df):
     cols = df.columns.tolist()
@@ -134,12 +136,7 @@ def suggest_columns(df):
                 best, best_score = match[0], match[1]
         if best is not None:
             suggestions[field] = back[best]
-    # prefer item family/group as category if present
-    for pref in ["item family group","item family"]:
-        for n, c in zip(norm, cols):
-            if n == pref:
-                suggestions["category"] = c
-    # ensure minimal required presence
+    # prefer Item family/Group as Category if present (already in TARGETS list)
     for r in REQUIRED_MIN:
         if r not in suggestions:
             st.error(f"Missing a required column for '{r}'. Please include it in your file.")
@@ -149,7 +146,8 @@ def suggest_columns(df):
 # ------------------- Sustainable spend-column detection -------------------
 SPEND_NAME_CUES = [
     "purchase amount","po amount","line total","line value","total value",
-    "net value","gross amount","extended price","spend","base curr","global curr"
+    "net value","gross amount","extended price","spend",
+    "base curr","base currency","global curr","local curr","invoice value"
 ]
 def detect_spend_column(df):
     hits = [c for c in df.columns if any(k in c.lower() for k in SPEND_NAME_CUES)]
@@ -158,9 +156,7 @@ def detect_spend_column(df):
     if len(hits) == 1:
         return hits[0]
     # choose the one with largest median numeric value (line totals >> unit price)
-    medians = {}
-    for c in hits:
-        medians[c] = pd.to_numeric(df[c], errors="coerce").median(skipna=True)
+    medians = {c: pd.to_numeric(df[c].apply(parse_price_to_float), errors="coerce").median(skipna=True) for c in hits}
     return max(medians, key=medians.get)
 
 # ------------------- Savings ranges & VAVE ideas -------------------
@@ -214,56 +210,54 @@ def add_baseline_and_flags(df, iqr_multiplier=1.5):
 
 # ------------------- Number formatting helpers -------------------
 def fmt_k_eur(series: pd.Series) -> pd.Series:
-    """Return numeric thousands (k€); use column_config for display as '€ 1,234 k'."""
+    """Return numeric thousands (k€); used with column_config to show '€ %d k'."""
     return (series / 1_000.0).round(0)
 
 # ------------------- MAIN -------------------
 if uploaded:
-    # 1) Read Excel (keep raw text; we’ll parse only needed numeric cols)
+    # 1) Read Excel (keep raw; parse only numeric fields as needed)
     raw = pd.read_excel(uploaded)
     raw.columns = [str(c) for c in raw.columns]
 
-    # 2) Auto-map core columns
+    # 2) Auto-map core columns (incl. category)
     suggestions = suggest_columns(raw)
     df = raw.rename(columns={v: k for k, v in suggestions.items() if v}).copy()
 
-    # 3) Detect spend column sustainably (header cues + median check)
+    # 3) Detect spend column sustainably
     spend_col_raw = detect_spend_column(raw)
     if spend_col_raw:
         st.success(f"Detected '{spend_col_raw}' as spend column.")
     else:
         st.warning("No clear spend column found; will use Unit Price × Quantity.")
 
-    # 4) Parse numeric columns properly (no global string mangling)
+    # 4) Parse numeric columns properly
     if "unit_price" in df.columns:
         df["unit_price"] = df["unit_price"].apply(parse_price_to_float)
     if "quantity" in df.columns:
         df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
 
-    # 5) Latest ECB FX → EUR (ignore date for simplicity, per your request)
+    # 5) Latest ECB FX → EUR (no historical merge)
     fx = load_latest_ecb()
     df["currency"] = df.get("currency", "")
     df = apply_fx_latest(df, fx)
 
-    # 6) Compute unit_price_eur for flags/outliers and a robust spend value in EUR
+    # 6) Compute unit_price_eur & robust spend in EUR
     if "unit_price" in df.columns:
         df["unit_price_eur"] = df["unit_price"] * df["rate_to_eur"]
     else:
         df["unit_price_eur"] = np.nan
 
     if spend_col_raw:
-        # use provided line-total column, then convert via latest FX
-        spend_numeric = pd.to_numeric(raw[spend_col_raw].apply(parse_price_to_float), errors="coerce")
-        df["_spend_eur"] = (spend_numeric * df["rate_to_eur"]).fillna(0.0)
+        spend_numeric = raw[spend_col_raw].apply(parse_price_to_float)
+        df["_spend_eur"] = (pd.to_numeric(spend_numeric, errors="coerce") * df["rate_to_eur"]).fillna(0.0)
     else:
-        # fall back to unit × qty × fx
         df["_spend_eur"] = (
             pd.to_numeric(df.get("unit_price"), errors="coerce") *
             pd.to_numeric(df.get("quantity"), errors="coerce") *
             df["rate_to_eur"]
         ).fillna(0.0)
 
-    # 7) Consistency ratio (only when all inputs present)
+    # 7) Consistency ratio
     if {"unit_price","quantity"}.issubset(df.columns):
         df["calc_spend"] = (
             pd.to_numeric(df["unit_price"], errors="coerce") *
@@ -276,18 +270,11 @@ if uploaded:
         df["calc_spend"] = np.nan
         df["consistency_ratio"] = np.nan
 
-    # 8) Sanity checks
-    too_small_prices = (df["unit_price_eur"].dropna() < 0.05).mean() > 0.4
-    msgs = []
-    if too_small_prices:
-        msgs.append("Many unit prices are under €0.05 — check quantity or decimal conventions.")
-    if msgs:
-        st.warning("Sanity checks:\n- " + "\n- ".join(msgs))
+    # 8) Sanity check
+    if (df["unit_price_eur"].dropna() < 0.05).mean() > 0.4:
+        st.warning("Sanity: Many unit prices < €0.05 — check quantity or decimal conventions.")
 
     # 9) Baseline & outlier flags
-    if "category" not in df.columns:
-        st.error("No category detected. Please include a 'Category' / 'Item family' column.")
-        st.stop()
     df = add_baseline_and_flags(df)
 
     # ------------------- VIEW 1: Category Overview -------------------
@@ -297,21 +284,13 @@ if uploaded:
         suppliers=("supplier", pd.Series.nunique) if "supplier" in df.columns else ("_spend_eur","count")
     ).reset_index()
 
-    # Savings ranges and potentials
     rngs = [savings_for(c) for c in cat["category"]]
     cat["Savings Range (%)"] = [f"{int(r[0]*100)}–{int(r[1]*100)}" for r in rngs]
     cat["Potential Min (€ k)"] = (cat["spend_eur"] * [r[0] for r in rngs] / 1_000).round(0)
     cat["Potential Max (€ k)"] = (cat["spend_eur"] * [r[1] for r in rngs] / 1_000).round(0)
-
-    # Spend display as € k (numeric; use column_config to show "€ … k")
     cat["Spend (€ k)"] = fmt_k_eur(cat["spend_eur"])
-
-    # Friendly headers
-    cat.rename(columns={
-        "category": "Category",
-        "lines": "# PO Lines",
-        "suppliers": "# Suppliers",
-    }, inplace=True)
+    cat.rename(columns={"category":"Category","# lines":"# PO Lines"}, inplace=True)
+    cat.rename(columns={"lines":"# PO Lines","suppliers":"# Suppliers"}, inplace=True)
 
     st.subheader("1) Category Overview")
     st.dataframe(
