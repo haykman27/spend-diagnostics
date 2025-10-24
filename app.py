@@ -1,7 +1,7 @@
 # Procurement Diagnostics — Final (Auto FX → EUR)
-# Sustainable spend detection, robust ECB FX (CSV), fallback selectors for Category/Supplier,
-# interactive tables with "€ x,xxx k", savings & VAVE, consistency check, and
-# a Spend Source selector (Detected vs Unit×Qty×FX vs Auto-validate).
+# Sustainable spend detection, robust ECB FX (CSV), fallback selectors for Category/Supplier/Currency
+# + NEW: fallback selectors for Unit Price & Quantity so Unit×Qty×FX always works.
+# Interactive tables with "€ x,xxx k", savings & VAVE, consistency check, and Spend Source selector.
 
 import io, re
 import numpy as np
@@ -95,9 +95,12 @@ TARGETS = {
     ],
     "supplier": ["supplier","supplier name","vendor","vendor name","seller","payee"],
     "currency": ["currency","ccy","curr","currency code","iso currency","tran curr","transaction currency"],
-    "unit_price": ["unit price","price","unit cost","net price","price per unit","unit gross price"],
-    "quantity": ["quantity","qty","order qty","qty ordered","units","volume"],
-    "amount": ["amount","line amount","total","total price","value","net value","extended price"],
+    "unit_price": [
+        "unit price","price","unit cost","net price","price per unit","unit gross price",
+        "unit po price","po unit price","unit price (base curr)","unit price (local curr)","unit price (global curr)"
+    ],
+    "quantity": ["quantity","qty","order qty","qty ordered","units","volume","po qty","po quantity","ordered qty"],
+    "amount": ["amount","line amount","total","total price","value","net value","extended price","purchase amount"]
 }
 def suggest_columns(df):
     cols = df.columns.tolist()
@@ -164,6 +167,12 @@ if uploaded:
     if "currency" not in mapping:
         st.warning("Currency column not auto-detected. Please choose it below.")
         mapping["currency"] = st.selectbox("Choose the Currency column:", options=raw.columns, key="cur_pick")
+    if "unit_price" not in mapping:
+        st.warning("Unit Price column not auto-detected. Please choose it below (price per item).")
+        mapping["unit_price"] = st.selectbox("Choose the Unit Price column (per item):", options=raw.columns, key="up_pick")
+    if "quantity" not in mapping:
+        st.warning("Quantity column not auto-detected. Please choose it below.")
+        mapping["quantity"] = st.selectbox("Choose the Quantity column:", options=raw.columns, key="qty_pick")
 
     df = raw.rename(columns={v:k for k,v in mapping.items() if v}).copy()
 
@@ -171,7 +180,7 @@ if uploaded:
     if spend_col:
         st.success(f"Detected '{spend_col}' as spend column.")
     else:
-        st.warning("No clear spend column found; will use Unit Price × Quantity.")
+        st.warning("No clear spend column found; you can use Unit×Qty×FX instead.")
 
     # Parse numeric inputs
     if "unit_price" in df.columns: df["unit_price"] = df["unit_price"].apply(parse_price_to_float)
@@ -312,7 +321,7 @@ if uploaded:
 
     # -------------------- Consistency Check ----------------------
     st.subheader("4) Consistency Check (Spend / Unit×Qty)")
-    dbg = df[["supplier","category","_spend_eur","rate_to_eur"]].copy()
+    dbg = df[["supplier","category","_spend_eur"]].copy()
     dbg["calc_spend"] = spend_calc
     with np.errstate(divide="ignore", invalid="ignore"):
         dbg["consistency_ratio"] = np.where(dbg["calc_spend"]>0, dbg["_spend_eur"]/dbg["calc_spend"], np.nan)
@@ -343,5 +352,5 @@ if uploaded:
     )
 
 else:
-    st.info("Upload an Excel file to begin. If Category/Supplier aren’t detected automatically, "
+    st.info("Upload an Excel file to begin. If Category/Supplier/Unit Price/Quantity aren’t detected automatically, "
             "you’ll be prompted to select the correct columns. All spends are shown in EUR (latest FX) as € k.")
