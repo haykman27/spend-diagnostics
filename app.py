@@ -1,5 +1,6 @@
 # Procurement Diagnostics — Final (Auto FX → EUR)
 # Sustainable spend detection, robust FX, interactive tables (€ k), fallback selectors for Category/Supplier.
+# Fixed: safe handling of NaN categories in savings/VAVE (no AttributeError).
 
 import io, re
 import numpy as np
@@ -118,20 +119,24 @@ def detect_spend_column(df):
     med={c:pd.to_numeric(df[c].apply(parse_price_to_float),errors="coerce").median(skipna=True) for c in hits}
     return max(med,key=med.get)
 
-# -------- Savings & VAVE --------
+# -------- Savings & VAVE (NaN-safe) --------
 SAVINGS={"stampings":(0.10,0.15),"tubes":(0.08,0.14),"plast":(0.08,0.18),"steel":(0.05,0.12),"logist":(0.08,0.15)}
 VAVE={"stampings":["Standardize steel grades","Improve sheet nesting","Relax tolerances","Bundle volumes"],
       "tubes":["Standardize diameters","Use HF-welded","Loosen length tolerance"],
       "plast":["Consolidate resins","Family molds","Standard inserts"],
       "steel":["Standardize material specs","Use index-linked pricing"],
       "logist":["Optimize mode mix","Increase load factor"]}
-def savings_for(c):
-    c=(c or "").lower()
+
+def savings_for(cat_value):
+    c = "" if (cat_value is None or (isinstance(cat_value,float) and np.isnan(cat_value))) else str(cat_value)
+    c = c.lower()
     for k,v in SAVINGS.items():
         if k in c:return v
     return (0.05,0.10)
-def vave_for(c):
-    c=(c or "").lower()
+
+def vave_for(cat_value):
+    c = "" if (cat_value is None or (isinstance(cat_value,float) and np.isnan(cat_value))) else str(cat_value)
+    c = c.lower()
     for k,v in VAVE.items():
         if k in c:return v
     return ["Standardize specs","Consolidate variants","Bundle volumes"]
@@ -148,23 +153,17 @@ if uploaded:
     # Auto-map + fallback selectors
     mapping=suggest_columns(raw)
 
-    # If category not detected, ask the user to pick it
     if "category" not in mapping:
         st.warning("Category column not auto-detected. Please choose it below.")
-        category_choice=st.selectbox("Choose the Category/Family/Group column:", options=raw.columns)
-        mapping["category"]=category_choice
+        mapping["category"]=st.selectbox("Choose the Category/Family/Group column:", options=raw.columns)
 
-    # If supplier not detected, ask the user to pick it
     if "supplier" not in mapping:
         st.warning("Supplier column not auto-detected. Please choose it below.")
-        supplier_choice=st.selectbox("Choose the Supplier/Vendor column:", options=raw.columns)
-        mapping["supplier"]=supplier_choice
+        mapping["supplier"]=st.selectbox("Choose the Supplier/Vendor column:", options=raw.columns)
 
-    # Currency fallback (rare, but allow manual pick if missing)
     if "currency" not in mapping:
         st.warning("Currency column not auto-detected. Please choose it below.")
-        currency_choice=st.selectbox("Choose the Currency column:", options=raw.columns)
-        mapping["currency"]=currency_choice
+        mapping["currency"]=st.selectbox("Choose the Currency column:", options=raw.columns)
 
     df=raw.rename(columns={v:k for k,v in mapping.items() if v}).copy()
 
@@ -223,13 +222,13 @@ if uploaded:
         suppliers=("supplier",pd.Series.nunique)
     ).reset_index()
 
+    # NaN-safe savings/VAVE application
     rngs=[savings_for(c) for c in cat["category"]]
     cat["Savings Range (%)"]=[f"{int(r[0]*100)}–{int(r[1]*100)}" for r in rngs]
     cat["Potential Min (€ k)"]=(cat["spend_eur"]*[r[0] for r in rngs]/1_000).round(0)
     cat["Potential Max (€ k)"]=(cat["spend_eur"]*[r[1] for r in rngs]/1_000).round(0)
     cat["Spend (€ k)"]=fmt_k(cat["spend_eur"])
-    cat.rename(columns={"category":"Category","# lines":"# PO Lines"},inplace=True)
-    cat.rename(columns={"lines":"# PO Lines","suppliers":"# Suppliers"},inplace=True)
+    cat.rename(columns={"category":"Category","lines":"# PO Lines","suppliers":"# Suppliers"},inplace=True)
 
     st.subheader("1) Category Overview")
     st.dataframe(
@@ -261,7 +260,7 @@ if uploaded:
 
     # ------------------- VAVE Ideas -------------------
     st.subheader("3) Example VAVE Ideas")
-    vrows=[{"Category":c,"Example VAVE Ideas":" • ".join(vave_for(c))} for c in cat["Category"]]
+    vrows=[{"Category":c if pd.notna(c) else "", "Example VAVE Ideas":" • ".join(vave_for(c))} for c in cat["Category"]]
     st.dataframe(pd.DataFrame(vrows),use_container_width=True)
 
     # ------------------- Consistency Check -------------------
