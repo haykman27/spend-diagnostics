@@ -1,11 +1,7 @@
 # Procurement Diagnostics — Final (Auto FX → EUR)
-# Dashboard + Deep Dives (full app) with:
-# - Robust ECB FX conversion; resilient column detection
-# - Sustainable spend logic (Detected vs Unit×Qty×FX vs Auto-validate)
-# - Improved Dashboard layout (donut visible, labels safe, synced Top-N, legend above + metrics panel)
-# - Click-to-drill (optional) via streamlit-plotly-events: donut -> category, bar -> supplier
-# - Data Quality card: summary KPIs + issue tables
-# - Deep Dives: Category Overview, Supplier Drill-Down, VAVE, Consistency, Outliers, Price-vs-Volume
+# Dashboard + Deep Dives, with robust FX, sustainable spend detection,
+# improved dashboard layout (fixed donut, formatted top suppliers with inline KPIs),
+# synced Top-N for Supplier×Category mix, optional click-to-drill, and a safe Data Quality card.
 
 import io, re
 import numpy as np
@@ -66,7 +62,6 @@ def normalize_headers(cols):
     return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 
 def parse_price_to_float(x):
-    """Parse numbers robustly (handles symbols, thousands sep, EU/US decimals)."""
     if pd.isna(x): return np.nan
     if isinstance(x, (int, float)): return float(x)
     s = re.sub(r"[^\d,\.\-]", "", str(x))
@@ -168,7 +163,7 @@ def detect_spend_column(df):
     med = {c: pd.to_numeric(df[c].apply(parse_price_to_float), errors="coerce").median(skipna=True) for c in hits}
     return max(med, key=med.get)
 
-# ---------------- Savings & VAVE (NaN-safe) -------------------
+# ---------------- Savings & VAVE -------------------
 SAVINGS = {"stampings":(0.10,0.15),"tubes":(0.08,0.14),"plast":(0.08,0.18),"steel":(0.05,0.12),"logist":(0.08,0.15)}
 VAVE = {
     "stampings": ["Standardize steel grades","Improve sheet nesting","Relax tolerances","Bundle volumes"],
@@ -336,7 +331,7 @@ if uploaded:
         )
 
     # ======================== Aggregations =========================
-    # Category rollup
+    # Category rollup (general purpose)
     cat = df.groupby("category", dropna=False).agg(
         spend_eur=("_spend_eur","sum"),
         lines=("category","count"),
@@ -345,7 +340,7 @@ if uploaded:
     cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
     cat.rename(columns={"category":"Category","lines":"# PO Lines","suppliers":"# Suppliers"}, inplace=True)
 
-    # Supplier rollup
+    # Supplier rollup (general purpose)
     sup_tot = df.groupby("supplier", dropna=False).agg(
         spend_eur=("_spend_eur","sum"),
         lines=("supplier","count"),
@@ -408,11 +403,9 @@ if uploaded:
             filter_line.append(f'<span class="pill">Supplier: {st.session_state.dash_sup_focus}</span>')
         if filter_line:
             st.markdown("Active selection: " + " ".join(filter_line), unsafe_allow_html=True)
-            cc1, cc2 = st.columns([0.2, 1])
-            with cc1:
-                if st.button("Clear", key="clear_drill"):
-                    st.session_state.dash_cat_focus = None
-                    st.session_state.dash_sup_focus = None
+            if st.button("Clear selections", key="clear_drill"):
+                st.session_state.dash_cat_focus = None
+                st.session_state.dash_sup_focus = None
 
         # --------- Data subsets per category focus (for Top bar) ----------
         if st.session_state.dash_cat_focus:
@@ -422,24 +415,35 @@ if uploaded:
 
         sup_tot_local = (
             df_for_bar.groupby("supplier", dropna=False)
-            .agg(spend_eur=("_spend_eur","sum"))
+            .agg(
+                spend_eur=("_spend_eur","sum"),
+                lines=("supplier","count"),
+                categories=("category", pd.Series.nunique),
+            )
             .reset_index().rename(columns={"supplier":"Supplier"})
-        ).sort_values("spend_eur", ascending=False)
+            .sort_values("spend_eur", ascending=False)
+        )
 
-        # ---------- DONUT (full left with legend below) ----------
+        # ---------- DONUT (RECOMPUTED DIRECTLY FROM df) ----------
         donut_col, bar_col = st.columns([1.1, 1.4])
 
         with donut_col:
             st.markdown("**Spend by Category**")
-            cat_sorted = cat.sort_values("spend_eur", ascending=False).copy()
-            topN = cat_sorted.head(top_cat_n)
-            other_val = cat_sorted["spend_eur"].iloc[top_cat_n:].sum()
+            # fresh groupby to avoid stale/zero values
+            donut_raw = (
+                df.groupby("category", dropna=False)["_spend_eur"]
+                  .sum().reset_index().rename(columns={"category":"Category","_spend_eur":"spend_eur"})
+            )
+            donut_raw = donut_raw[donut_raw["spend_eur"] > 0]  # drop zero-valued slices
+            donut_raw = donut_raw.sort_values("spend_eur", ascending=False)
+            topN = donut_raw.head(top_cat_n)
+            other_val = donut_raw["spend_eur"].iloc[top_cat_n:].sum()
             donut_df = pd.concat([
                 topN[["Category", "spend_eur"]],
-                pd.DataFrame([{"Category": "Other", "spend_eur": other_val}])
+                pd.DataFrame([{"Category": "Other", "spend_eur": other_val}]) if other_val>0 else pd.DataFrame([])
             ], ignore_index=True)
 
-            if PLOTLY_AVAILABLE:
+            if PLOTLY_AVAILABLE and not donut_df.empty:
                 fig = px.pie(
                     donut_df, names="Category", values="spend_eur",
                     hole=0.45, color_discrete_sequence=px.colors.qualitative.Set3
@@ -453,7 +457,7 @@ if uploaded:
                 )
                 if PLOTLY_EVENTS_AVAILABLE:
                     res = plotly_events(fig, select_event=True, hover_event=False, click_event=True, override_height=520)
-                    st.caption("Tip: Click a wedge to drill into that category. Click **Clear** to reset.")
+                    st.caption("Tip: Click a wedge to drill into that category. Use **Clear selections** above to reset.")
                     if res:
                         lab = res[0].get("label")
                         if lab and lab != "Other":
@@ -462,16 +466,22 @@ if uploaded:
                 else:
                     st.plotly_chart(fig, use_container_width=True)
                     st.caption("Install `streamlit-plotly-events` to enable click-to-drill.")
-
             else:
-                st.dataframe(donut_df.rename(columns={"spend_eur":"Spend (EUR)"}))
+                st.info("No positive spend values for categories to plot yet.")
 
-        # ---------- TOP SUPPLIERS BAR (labels never cut) ----------
+        # ---------- TOP SUPPLIERS BAR (with inline KPIs) ----------
         with bar_col:
             st.markdown("**Top Suppliers by Spend**")
             top_sup = sup_tot_local.head(sup_n).copy()
-            if PLOTLY_AVAILABLE:
+            if PLOTLY_AVAILABLE and not top_sup.empty:
                 max_x = float(top_sup["spend_eur"].max()) * 1.18
+
+                # build inline KPI text
+                text_labels = [
+                    f"€ {v/1_000_000:,.1f} M — L: {ln:,}, C: {ct:,}"
+                    for v, ln, ct in zip(top_sup["spend_eur"], top_sup["lines"], top_sup["categories"])
+                ]
+
                 fig2 = px.bar(
                     top_sup,
                     x="spend_eur", y="Supplier",
@@ -481,42 +491,41 @@ if uploaded:
                     labels={"spend_eur":"Spend (EUR)"},
                 )
                 fig2.update_traces(
-                    hovertemplate="%{y}<br>€ %{x:,.0f}",
-                    text=[f"€ {v/1_000_000:,.1f} M" for v in top_sup["spend_eur"]],
+                    hovertemplate="%{y}<br>€ %{x:,.0f}<br>Lines: %{customdata[0]:,} • Categories: %{customdata[1]:,}",
+                    customdata=np.stack([top_sup["lines"], top_sup["categories"]], axis=-1),
+                    text=text_labels,
                     textposition="outside",
+                    texttemplate="%{text}",
                     cliponaxis=False
                 )
                 fig2.update_layout(
                     coloraxis_showscale=False,
                     height=520,
-                    margin=dict(l=10, r=120, t=10, b=10),
+                    margin=dict(l=10, r=180, t=10, b=10),  # more right headroom for text
                     xaxis=dict(title="", showgrid=True, zeroline=False, range=[0, max_x]),
-                    yaxis=dict(title="Supplier", categoryorder="total ascending")
+                    yaxis=dict(title="Supplier", categoryorder="total ascending", automargin=True, ticksuffix=" ",
+                               tickfont={"size":12})
                 )
-                if PLOTLY_EVENTS_AVAILABLE and not top_sup.empty:
+                if PLOTLY_EVENTS_AVAILABLE:
                     res2 = plotly_events(fig2, select_event=True, click_event=True, hover_event=False, override_height=520)
                     st.caption("Tip: Click a supplier bar to focus the mix below.")
                     if res2:
-                        # plotly_events returns point with 'y' (supplier label) or x/y coords
                         sup_label = res2[0].get("y")
                         if not sup_label:
-                            # sometimes stored as 'label' or in 'pointIndex'
                             sup_label = top_sup.iloc[res2[0].get("pointIndex", 0)]["Supplier"]
                         st.session_state.dash_sup_focus = sup_label
                 else:
                     st.plotly_chart(fig2, use_container_width=True)
                     st.caption("Install `streamlit-plotly-events` to enable click-to-drill.")
             else:
-                st.dataframe(top_sup[["Supplier","spend_eur"]])
+                st.info("No positive supplier spend to plot yet.")
 
         st.markdown('<div class="mt-24"></div>', unsafe_allow_html=True)
 
-        # ---------- SUPPLIER × CATEGORY MIX (exact same Top-N + metrics) ----------
+        # ---------- SUPPLIER × CATEGORY MIX ----------
         st.markdown("**Supplier × Category Mix**")
 
-        # EXACT same supplier list/order as the bar above:
         if st.session_state.dash_sup_focus:
-            # If a supplier is focused, show just that supplier (but still respect cat focus)
             top_list = [st.session_state.dash_sup_focus] if st.session_state.dash_sup_focus in sup_tot_local["Supplier"].values else []
         else:
             top_list = top_sup["Supplier"].tolist()
@@ -541,83 +550,53 @@ if uploaded:
             hover_tpl = "%{y} • %{legendgroup}<br>€ %{x:,.0f}"
             xaxis_cfg = dict()
 
-        mix_col, metrics_col = st.columns([2.0, 1.0])
-
-        with mix_col:
-            if PLOTLY_AVAILABLE and not piv.empty:
-                order_y = top_list[::-1]
-                fig3 = px.bar(
-                    piv, x="value", y="Supplier", color="Category_filt",
-                    orientation="h",
-                    labels={"value": value_label, "Category_filt":"Category"},
-                    color_discrete_sequence=px.colors.qualitative.Set3,
-                )
-                fig3.update_traces(hovertemplate=hover_tpl)
-                fig3.update_layout(
-                    height=550, barmode="stack",
-                    margin=dict(l=10,r=10,t=60,b=10),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.12, x=0, xanchor="left"),
-                    xaxis=xaxis_cfg
-                )
-                fig3.update_yaxes(categoryorder="array", categoryarray=order_y)
-                st.plotly_chart(fig3, use_container_width=True)
-            else:
-                st.dataframe(piv.sort_values(["Supplier","value"], ascending=[True,False]))
-
-        with metrics_col:
-            st.markdown("**Supplier metrics (current view)**")
-            df_scope = df[df["supplier"].isin(top_list)]
-            if st.session_state.dash_cat_focus:
-                df_scope = df_scope[df_scope["category"] == st.session_state.dash_cat_focus]
-            m = (
-                df_scope
-                .groupby("supplier", dropna=False)
-                .agg(
-                    Spend_EUR=("_spend_eur","sum"),
-                    Lines=("supplier","count"),
-                    Categories=("category", pd.Series.nunique),
-                )
-                .reset_index().rename(columns={"supplier":"Supplier"})
+        if PLOTLY_AVAILABLE and not piv.empty:
+            order_y = top_list[::-1]
+            fig3 = px.bar(
+                piv, x="value", y="Supplier", color="Category_filt",
+                orientation="h",
+                labels={"value": value_label, "Category_filt":"Category"},
+                color_discrete_sequence=px.colors.qualitative.Set3,
             )
-            m["Supplier"] = pd.Categorical(m["Supplier"], categories=top_list, ordered=True)
-            m = m.sort_values("Supplier")
-            total_in_top = float(m["Spend_EUR"].sum()) if not m.empty else 0.0
-            m["Share (%)"] = np.where(total_in_top>0, (m["Spend_EUR"]/total_in_top*100).round(1), 0.0)
-            m["Spend (€ k)"] = (m["Spend_EUR"]/1_000).round(0)
-
-            st.dataframe(
-                m[["Supplier","Spend (€ k)","Lines","Categories","Share (%)"]],
-                use_container_width=True,
-                height=550,
-                column_config={
-                    "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-                    "Lines": st.column_config.NumberColumn(format="%d"),
-                    "Categories": st.column_config.NumberColumn(format="%d"),
-                    "Share (%)": st.column_config.NumberColumn(format="%.1f %%"),
-                }
+            fig3.update_traces(hovertemplate=hover_tpl)
+            fig3.update_layout(
+                height=550, barmode="stack",
+                margin=dict(l=10,r=10,t=60,b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.12, x=0, xanchor="left"),
+                xaxis=xaxis_cfg,
+                yaxis=dict(automargin=True, ticksuffix=" ", tickfont={"size":12})
             )
+            fig3.update_yaxes(categoryorder="array", categoryarray=order_y)
+            st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.info("No data to plot for the current mix selection.")
 
-        # -------------------- DATA QUALITY CARD --------------------
+        # -------------------- DATA QUALITY CARD (safe) --------------------
         st.markdown("### Data Quality")
         dq1, dq2, dq3, dq4 = st.columns(4)
 
-        # Currency detection quality
-        raw_currency = raw[mapping.get("currency")] if "currency" in mapping else pd.Series([], dtype=object)
-        detected_iso = raw_currency.astype(str).apply(detect_iso_from_text) if not raw_currency.empty else pd.Series([], dtype=object)
-        unknown_ccy = int((detected_iso.isna()) | (detected_iso==""))
+        try:
+            if "currency" in mapping and mapping["currency"] in raw.columns:
+                raw_currency = raw[mapping["currency"]]
+                detected_iso = raw_currency.astype(str).apply(detect_iso_from_text)
+                unknown_ccy = int(((detected_iso.isna()) | (detected_iso=="")).sum())
+            else:
+                unknown_ccy = 0
+        except Exception:
+            unknown_ccy = 0
+
         missing_category = int(df["category"].isna().sum())
         missing_supplier = int(df["supplier"].isna().sum())
-
-        # Quantity/price issues
         zero_qty = int((pd.to_numeric(df.get("quantity"), errors="coerce")<=0).sum())
         zero_price = int((pd.to_numeric(df.get("unit_price"), errors="coerce")<=0).sum())
 
-        # Extreme prices (top 1% by price)
         prc = pd.to_numeric(df.get("unit_price_eur"), errors="coerce")
-        extreme_cut = np.nanpercentile(prc.dropna(), 99) if prc.notna().sum() >= 50 else np.nan
-        extreme_cnt = int((prc > extreme_cut).sum()) if not np.isnan(extreme_cut) else 0
+        if prc.notna().sum() >= 50:
+            extreme_cut = np.nanpercentile(prc.dropna(), 99)
+            extreme_cnt = int((prc > extreme_cut).sum())
+        else:
+            extreme_cut, extreme_cnt = np.nan, 0
 
-        # Consistency vs calc
         calc = (
             pd.to_numeric(df.get("unit_price"), errors="coerce") *
             pd.to_numeric(df.get("quantity"), errors="coerce") *
@@ -626,7 +605,7 @@ if uploaded:
         det = df["_spend_eur"]
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio = np.where(calc>0, det/calc, np.nan)
-        bad_var = int((np.abs(ratio-1) > 0.50).sum())  # >50% dev
+        bad_var = int((np.abs(ratio-1) > 0.50).sum())
 
         with dq1:
             st.markdown('<div class="kpi-card"><div class="kpi-title">Unknown Currency</div>'
@@ -644,26 +623,12 @@ if uploaded:
         with st.expander("See issue details / samples"):
             colA, colB = st.columns(2)
             with colA:
-                st.markdown("**Unknown currency examples**")
-                if unknown_ccy > 0 and "currency" in mapping:
-                    unk_idx = detected_iso[detected_iso.isna()].index
-                    st.dataframe(raw.loc[unk_idx, [mapping["currency"]]].head(20))
-                else:
-                    st.caption("None.")
-
                 st.markdown("**Extreme prices (top 1%)**")
                 if extreme_cnt > 0 and not np.isnan(extreme_cut):
                     st.dataframe(df.loc[prc > extreme_cut, ["supplier","category","unit_price_eur","quantity"]].head(20))
                 else:
                     st.caption("None.")
-
             with colB:
-                st.markdown("**Zero/negative quantity**")
-                if zero_qty > 0:
-                    st.dataframe(df[pd.to_numeric(df.get("quantity"), errors="coerce")<=0][["supplier","category","quantity","unit_price"]].head(20))
-                else:
-                    st.caption("None.")
-
                 st.markdown("**>50% spend mismatch (Detected vs Unit×Qty×FX)**")
                 bad_rows = df[np.abs(ratio-1) > 0.50]
                 if not bad_rows.empty:
