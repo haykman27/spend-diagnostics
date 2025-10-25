@@ -3,13 +3,13 @@
 # Spend Source selector (Detected vs Unit×Qty×FX vs Auto-validate),
 # Category & Supplier analytics, VAVE, Consistency check,
 # Outlier & Opportunity Finder (baseline vs price),
-# and a Price vs Volume scatter with Category/Supplier filters.
+# and a Price vs Volume scatter with Category/Supplier filters (Plotly).
 
 import io, re
 import numpy as np
 import pandas as pd
 import streamlit as st
-import altair as alt
+import plotly.express as px
 from rapidfuzz import process, fuzz
 
 # -------------------------- App setup --------------------------
@@ -437,28 +437,33 @@ if uploaded:
     st.dataframe(opp_cat[["Category","Opportunity (€ k)"]], use_container_width=True,
                  column_config={"Opportunity (€ k)": st.column_config.NumberColumn(format="€ %d k")})
 
-    # ===== Scatter: Unit Price (EUR) vs Quantity (Volume) =====
+    # ===== Scatter: Unit Price (EUR) vs Quantity (Volume) [Plotly] =====
     st.markdown("**Price vs Volume Scatter**")
 
     scatter_df = df_bp[[
         "category","supplier","unit_price_eur","quantity","premium_pct","line_opportunity_eur"
     ]].copy()
+
     scatter_df = scatter_df[
         scatter_df["unit_price_eur"].notna() &
         scatter_df["quantity"].notna() &
         (scatter_df["quantity"] > 0)
-    ]
+    ].copy()
 
+    # dropdowns with "All"
     cat_options = ["All"] + sorted([c for c in scatter_df["category"].dropna().unique()])
     cat_choice = st.selectbox("Category (for scatter):", cat_options, index=0)
 
     if cat_choice != "All":
-        sup_options = ["All"] + sorted([s for s in scatter_df.loc[scatter_df["category"]==cat_choice, "supplier"].dropna().unique()])
+        sup_options = ["All"] + sorted(
+            [s for s in scatter_df.loc[scatter_df["category"]==cat_choice, "supplier"].dropna().unique()]
+        )
     else:
         sup_options = ["All"] + sorted([s for s in scatter_df["supplier"].dropna().unique()])
 
     sup_choice = st.selectbox("Supplier (for scatter):", sup_options, index=0)
 
+    # apply filters
     sc = scatter_df.copy()
     if cat_choice != "All":
         sc = sc[sc["category"] == cat_choice]
@@ -468,36 +473,43 @@ if uploaded:
     if sc.empty:
         st.info("No rows match the current filters.")
     else:
-        # Clamp axes to 1st–99th percentiles for readability
+        # clamp axes to 1st–99th percentiles for readability
         q_low, q_high = np.nanpercentile(sc["quantity"], [0, 99])
         p_low, p_high = np.nanpercentile(sc["unit_price_eur"], [0, 99])
         if q_low == q_high: q_high = q_low + 1
         if p_low == p_high: p_high = p_low + 1
 
-        chart = (
-            alt.Chart(sc)
-            .mark_circle(opacity=0.7)
-            .encode(
-                x=alt.X("quantity:Q", title="Quantity (Volume)", scale=alt.Scale(domain=[q_low, q_high])),
-                y=alt.Y("unit_price_eur:Q", title="Actual unit price (EUR)", scale=alt.Scale(domain=[p_low, p_high])),
-                size=alt.Size("line_opportunity_eur:Q", title="Opportunity (EUR)", scale=alt.Scale(range=[20, 800])),
-                color=alt.Color("premium_pct:Q",
-                                title="Premium %",
-                                scale=alt.Scale(scheme="redyellowgreen", domain=[-0.1, 0.0, 0.5], reverse=True),
-                                legend=alt.Legend(format=".0%")),
-                tooltip=[
-                    alt.Tooltip("category:N", title="Category"),
-                    alt.Tooltip("supplier:N", title="Supplier"),
-                    alt.Tooltip("quantity:Q", title="Quantity", format=",.0f"),
-                    alt.Tooltip("unit_price_eur:Q", title="Unit price (EUR)", format=",.4f"),
-                    alt.Tooltip("premium_pct:Q", title="Premium %", format=".1%"),
-                    alt.Tooltip("line_opportunity_eur:Q", title="Opportunity (€)", format=",.0f"),
-                ],
-            )
-            .properties(height=420)
-            .interactive()
+        # optional: log scale toggle for volume
+        use_log_x = st.checkbox("Log scale for Quantity", value=False)
+
+        fig = px.scatter(
+            sc,
+            x="quantity",
+            y="unit_price_eur",
+            color="premium_pct",
+            size="line_opportunity_eur",
+            hover_data={
+                "category": True,
+                "supplier": True,
+                "quantity": ":,.0f",
+                "unit_price_eur": ":,.4f",
+                "premium_pct": ".1%",
+                "line_opportunity_eur": ":,.0f",
+            },
+            color_continuous_scale="RdYlGn_r",  # red=high premium, green=low
+            labels={
+                "quantity": "Quantity (Volume)",
+                "unit_price_eur": "Actual unit price (EUR)",
+                "premium_pct": "Premium %",
+                "line_opportunity_eur": "Opportunity (€)",
+            },
         )
-        st.altair_chart(chart, use_container_width=True)
+
+        fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
+        fig.update_xaxes(range=[q_low, q_high], type="log" if use_log_x else "linear")
+        fig.update_yaxes(range=[p_low, p_high])
+
+        st.plotly_chart(fig, use_container_width=True)
 
     # ------------------------- 6) Download pack --------------------
     st.markdown("#### Download full results (XLSX)")
