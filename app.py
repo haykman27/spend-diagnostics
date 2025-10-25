@@ -1,8 +1,10 @@
 # Procurement Diagnostics — Final (Auto FX → EUR)
-# Dashboard + Deep Dives
-# - Robust ECB FX conversion; resilient column detection; spend-source selector (Detected vs Unit×Qty×FX vs Auto-validate)
+# Dashboard + Deep Dives (full app)
+# - Robust ECB FX conversion; resilient column detection
+# - Sustainable spend detection (Detected vs Unit×Qty×FX vs Auto-validate)
 # - Dashboard: KPI cards, donut by category, top suppliers bar w/ labels, supplier×category (% mix / EUR)
-# - Deep Dives: Category Overview, Supplier Drill-Down, VAVE, Consistency, Outliers, Price-vs-Volume scatter (Plotly)
+# - Deep Dives: Category Overview, Supplier Drill-Down, VAVE, Consistency, Outliers, Price-vs-Volume scatter
+# - Upload + Column mapping + Spend source are in the SIDEBAR
 
 import io, re
 import numpy as np
@@ -24,11 +26,11 @@ st.title("Procurement Diagnostics — Final (Auto FX → EUR)")
 
 st.caption(
     "Upload your Excel spend cube. The app auto-detects columns, parses numbers, converts to EUR "
-    "(latest ECB FX), and shows diagnostics in € k. Use the **sidebar** to switch between the "
-    "**Dashboard** and **Deep Dives**."
+    "(latest ECB FX), and shows diagnostics in € k. Use the **sidebar** for data setup and to switch "
+    "between the **Dashboard** and **Deep Dives**."
 )
 
-# ---- lightweight CSS for KPI cards / spacing ----
+# ---- lightweight CSS for KPI cards / spacing + wider sidebar ----
 st.markdown(
     """
     <style>
@@ -44,12 +46,12 @@ st.markdown(
       .mt-8 { margin-top: 8px; }
       .mt-16 { margin-top: 16px; }
       .mt-24 { margin-top: 24px; }
+      [data-testid="stSidebar"] { min-width: 360px; max-width: 400px; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx", "xls"])
 BASE = "EUR"
 
 # -------------------------- Helpers ----------------------------
@@ -189,38 +191,47 @@ def detect_item_col(df):
     if not hits: return None
     return sorted(hits, key=lambda x: len(x), reverse=True)[0]
 
-# ============================== MAIN ==============================
+# ======================= SIDEBAR: data setup =====================
+with st.sidebar:
+    st.header("Data")
+    uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx", "xls"])
+
 if uploaded:
     raw = pd.read_excel(uploaded)
     raw.columns = [str(c) for c in raw.columns]
 
-    # Auto-map & fallback selectors
+    # Auto-map & fallback selectors IN SIDEBAR
     mapping = suggest_columns(raw)
-    if "category" not in mapping:
-        st.warning("Category column not auto-detected. Please choose it below.")
-        mapping["category"] = st.selectbox("Choose the Category/Family/Group column:", options=raw.columns, key="cat_pick")
-    if "supplier" not in mapping:
-        st.warning("Supplier column not auto-detected. Please choose it below.")
-        mapping["supplier"] = st.selectbox("Choose the Supplier/Vendor column:", options=raw.columns, key="sup_pick")
-    if "currency" not in mapping:
-        st.warning("Currency column not auto-detected. Please choose it below.")
-        mapping["currency"] = st.selectbox("Choose the Currency column:", options=raw.columns, key="cur_pick")
-    if "unit_price" not in mapping:
-        st.warning("Unit Price column not auto-detected. Please choose it below (price per item).")
-        mapping["unit_price"] = st.selectbox("Choose the Unit Price column (per item):", options=raw.columns, key="up_pick")
-    if "quantity" not in mapping:
-        st.warning("Quantity column not auto-detected. Please choose it below.")
-        mapping["quantity"] = st.selectbox("Choose the Quantity column:", options=raw.columns, key="qty_pick")
+    with st.sidebar:
+        st.subheader("Column mapping")
+
+        if "category" not in mapping:
+            st.warning("Category column not auto-detected.")
+            mapping["category"] = st.selectbox("Category / Family / Group column", options=raw.columns, key="cat_pick")
+        if "supplier" not in mapping:
+            st.warning("Supplier column not auto-detected.")
+            mapping["supplier"] = st.selectbox("Supplier / Vendor column", options=raw.columns, key="sup_pick")
+        if "currency" not in mapping:
+            st.warning("Currency column not auto-detected.")
+            mapping["currency"] = st.selectbox("Currency column", options=raw.columns, key="cur_pick")
+        if "unit_price" not in mapping:
+            st.warning("Unit Price column not auto-detected.")
+            mapping["unit_price"] = st.selectbox("Unit Price (per item)", options=raw.columns, key="up_pick")
+        if "quantity" not in mapping:
+            st.warning("Quantity column not auto-detected.")
+            mapping["quantity"] = st.selectbox("Quantity", options=raw.columns, key="qty_pick")
 
     df = raw.rename(columns={v:k for k,v in mapping.items() if v}).copy()
 
+    # Spend column detection feedback → sidebar
     spend_col = detect_spend_column(raw)
-    if spend_col:
-        st.success(f"Detected '{spend_col}' as spend column.")
-    else:
-        st.warning("No clear spend column found; you can use Unit×Qty×FX instead.")
+    with st.sidebar:
+        if spend_col:
+            st.success(f"Detected **'{spend_col}'** as spend column.")
+        else:
+            st.warning("No clear spend column found; you can use Unit×Qty×FX instead.")
 
-    # Parse numeric inputs
+    # Parse numerics
     if "unit_price" in df.columns: df["unit_price"] = df["unit_price"].apply(parse_price_to_float)
     if "quantity" in df.columns: df["quantity"] = pd.to_numeric(df["quantity"], errors="coerce")
 
@@ -266,14 +277,17 @@ if uploaded:
         df["rate_to_eur"]
     )
 
-    # Spend source selector
-    mode = st.radio(
-        "Spend source (from your uploaded Excel):",
-        ["Use detected spend column", "Use Unit×Qty×FX", "Auto-validate"],
-        index=0,
-        help="Choose which spend source to use. Auto-validate compares both and picks the consistent one."
-    )
+    # Spend source selector → sidebar
+    with st.sidebar:
+        st.subheader("Spend source")
+        mode = st.radio(
+            "Choose the spend source:",
+            ["Use detected spend column", "Use Unit×Qty×FX", "Auto-validate"],
+            index=0,
+            help="Auto-validate compares both and picks the consistent one."
+        )
 
+    # Mode resolution (unchanged)
     if mode == "Use detected spend column":
         df["_spend_eur"] = spend_detected.fillna(0.0)
     elif mode == "Use Unit×Qty×FX":
@@ -294,18 +308,20 @@ if uploaded:
         else:
             if spend_detected.notna().sum() < spend_calc.notna().sum():
                 use_calc = True
+
         if use_calc:
-            st.warning("Auto-validate switched to **Unit×Qty×FX** because the detected spend column "
-                       "was inconsistent with the calculation.")
+            with st.sidebar:
+                st.warning("Auto-validate switched to **Unit×Qty×FX** because the detected spend column was inconsistent.")
             df["_spend_eur"] = spend_calc.fillna(0.0)
         else:
             df["_spend_eur"] = spend_detected.fillna(0.0)
 
-    # Transparency
-    st.caption(
-        f"Detected spend total: € {np.nansum(spend_detected):,.0f}  •  "
-        f"Unit×Qty×FX total: € {np.nansum(spend_calc):,.0f}"
-    )
+    # Transparency numbers → sidebar
+    with st.sidebar:
+        st.caption(
+            f"Detected spend total: € {np.nansum(spend_detected):,.0f}  •  "
+            f"Unit×Qty×FX total: € {np.nansum(spend_calc):,.0f}"
+        )
 
     # ======================== Aggregations =========================
     # Category rollup
@@ -315,7 +331,7 @@ if uploaded:
         suppliers=("supplier", pd.Series.nunique)
     ).reset_index()
     cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
-    cat.rename(columns={"category":"Category","lines":"# PO Lines","# PO Lines":"# PO Lines","suppliers":"# Suppliers"}, inplace=True)
+    cat.rename(columns={"category":"Category","lines":"# PO Lines","suppliers":"# Suppliers"}, inplace=True)
 
     # Supplier rollup
     sup_tot = df.groupby("supplier", dropna=False).agg(
@@ -331,7 +347,7 @@ if uploaded:
           .sum().reset_index().rename(columns={"supplier":"Supplier","category":"Category","_spend_eur":"Spend_EUR"})
     )
 
-    # Sidebar navigation
+    # -------------------------- Navigation -------------------------
     page = st.sidebar.radio("Navigation", ["Dashboard", "Deep Dives"], index=0)
 
     # ============================ Dashboard =========================
@@ -432,7 +448,6 @@ if uploaded:
         # ---------- SUPPLIER × CATEGORY (Stacked / % mix) ----------
         st.markdown("**Supplier × Category Mix**")
 
-        # focus the chart: top suppliers and top categories; everything else → Other
         top_suppliers_list = sup_tot.sort_values("spend_eur", ascending=False).head(15)["Supplier"].tolist()
         top_categories_list = cat.sort_values("spend_eur", ascending=False).head(6)["Category"].tolist()
 
@@ -440,7 +455,6 @@ if uploaded:
         sc = sc[sc["Supplier"].isin(top_suppliers_list)]
         sc["Category_filt"] = sc["Category"].where(sc["Category"].isin(top_categories_list), "Other")
 
-        # choose between % mix vs absolute EUR
         view = st.radio("View", ["% mix", "EUR"], horizontal=True, index=0)
 
         piv = sc.groupby(["Supplier","Category_filt"])["Spend_EUR"].sum().reset_index()
@@ -472,7 +486,7 @@ if uploaded:
             st.dataframe(piv.sort_values(["Supplier","value"], ascending=[True,False]))
 
         st.divider()
-        st.caption("Tip: Use the **Deep Dives** page in the sidebar for detailed analysis and line-level opportunities.")
+        st.caption("Tip: Use the **Deep Dives** page for detailed analysis and line-level opportunities.")
 
     # ============================ Deep Dives ========================
     else:
@@ -602,7 +616,6 @@ if uploaded:
             if not PLOTLY_AVAILABLE:
                 st.warning("Plotly is not installed. Add `plotly>=5.24` to requirements.txt to enable this chart.")
             else:
-                # reuse the computed df_bp & premium if present; otherwise compute quickly
                 if 'df_bp' not in locals():
                     df_bp = df.copy()
                     if "unit_price_eur" not in df_bp.columns:
@@ -697,7 +710,7 @@ if uploaded:
 
 else:
     st.info(
-        "Upload an Excel file to begin. If Category/Supplier/Currency/Unit Price/Quantity aren’t detected automatically, "
-        "you’ll be prompted to select the correct columns. All spends are shown in EUR (latest FX) as € k. "
-        "Use the sidebar to access the **Dashboard** or the **Deep Dives**."
+        "Use the **sidebar** to upload an Excel file. If Category/Supplier/Currency/Unit Price/Quantity aren’t detected "
+        "automatically, you’ll be prompted to select the correct columns there. All spends are shown in EUR "
+        "(latest FX) as € k. Use the sidebar to access the **Dashboard** or the **Deep Dives**."
     )
