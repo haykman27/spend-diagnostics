@@ -1,25 +1,31 @@
 # Procurement Diagnostics — Final (Auto FX → EUR)
-# Sustainable spend detection, robust ECB FX (CSV), fallback selectors for Category/Supplier/Currency/Unit Price/Quantity,
-# Spend Source selector (Detected vs Unit×Qty×FX vs Auto-validate),
-# Category & Supplier analytics, VAVE, Consistency check,
-# Outlier & Opportunity Finder (baseline vs price),
-# and a Price vs Volume scatter with Category/Supplier filters (Plotly).
+# Dashboard + Deep Dives
+# - Robust ECB FX conversion; resilient column detection; spend-source selector
+# - Dashboard: KPIs, pie by category, top-20 suppliers, stacked bar supplier-category
+# - Deep Dives: Category Overview, Supplier Drill-Down, VAVE, Consistency, Outliers, Price-vs-Volume scatter
 
 import io, re
 import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.express as px
+
+# Plotly (guard import so app still loads even if Plotly missing; advise requirements.txt)
+try:
+    import plotly.express as px
+    PLOTLY_AVAILABLE = True
+except Exception:
+    PLOTLY_AVAILABLE = False
+
 from rapidfuzz import process, fuzz
 
 # -------------------------- App setup --------------------------
 st.set_page_config(page_title="Procurement Diagnostics — Final", layout="wide")
 st.title("Procurement Diagnostics — Final (Auto FX → EUR)")
+
 st.caption(
     "Upload your Excel spend cube. The app auto-detects columns, parses numbers, converts to EUR "
-    "(latest ECB FX), and shows diagnostics in € k. If a key column isn’t recognized, you can pick it. "
-    "Use the Spend Source toggle to control exactly which column/calculation to use. "
-    "Includes Outlier & Opportunity Finder and a Price vs Volume scatter."
+    "(latest ECB FX), and shows diagnostics in € k. Use the **sidebar** to switch between the "
+    "**Dashboard** and **Deep Dives**."
 )
 
 uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx", "xls"])
@@ -280,248 +286,321 @@ if uploaded:
         f"Unit×Qty×FX total: € {np.nansum(spend_calc):,.0f}"
     )
 
-    # --------------------- 1) Category Overview ---------------------
+    # ======================== Aggregations =========================
+    # Category rollup
     cat = df.groupby("category", dropna=False).agg(
         spend_eur=("_spend_eur","sum"),
         lines=("category","count"),
         suppliers=("supplier", pd.Series.nunique)
     ).reset_index()
-
-    rngs = [savings_for(c) for c in cat["category"]]
-    cat["Savings Range (%)"] = [f"{int(r[0]*100)}–{int(r[1]*100)}" for r in rngs]
-    cat["Potential Min (€ k)"] = (cat["spend_eur"] * [r[0] for r in rngs] / 1_000).round(0)
-    cat["Potential Max (€ k)"] = (cat["spend_eur"] * [r[1] for r in rngs] / 1_000).round(0)
     cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
     cat.rename(columns={"category":"Category","lines":"# PO Lines","suppliers":"# Suppliers"}, inplace=True)
 
-    st.subheader("1) Category Overview")
-    st.dataframe(
-        cat[["Category","Spend (€ k)","Savings Range (%)","Potential Min (€ k)","Potential Max (€ k)","# PO Lines","# Suppliers"]],
-        use_container_width=True,
-        column_config={
-            "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-            "Potential Min (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-            "Potential Max (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-            "# PO Lines": st.column_config.NumberColumn(format="%d"),
-            "# Suppliers": st.column_config.NumberColumn(format="%d"),
-        }
+    # Supplier rollup
+    sup_tot = df.groupby("supplier", dropna=False).agg(
+        spend_eur=("_spend_eur","sum"),
+        lines=("supplier","count"),
+        categories=("category", pd.Series.nunique)
+    ).reset_index().rename(columns={"supplier":"Supplier"})
+    sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
+
+    # Supplier x Category spend
+    sup_cat = (
+        df.groupby(["supplier","category"], dropna=False)["_spend_eur"]
+          .sum().reset_index().rename(columns={"supplier":"Supplier","category":"Category","_spend_eur":"Spend_EUR"})
     )
 
-    # --------------------- 2) Supplier Drill-Down --------------------
-    st.subheader("2) Supplier Drill-Down")
-    chosen_cat = st.selectbox("Choose Category:", options=cat["Category"])
-    sup = (
-        df[df["category"] == chosen_cat]
-        .groupby("supplier", dropna=False)
-        .agg(spend_eur=("_spend_eur","sum"))
-        .reset_index()
-        .assign(**{"Spend (€ k)": lambda x: fmt_k(x["spend_eur"])})
-        .rename(columns={"supplier":"Supplier"})
-        .sort_values("Spend (€ k)", ascending=False)
-    )
-    st.dataframe(
-        sup[["Supplier","Spend (€ k)"]],
-        use_container_width=True,
-        column_config={"Spend (€ k)": st.column_config.NumberColumn(format="€ %d k")}
-    )
+    # Sidebar navigation
+    page = st.sidebar.radio("Navigation", ["Dashboard", "Deep Dives"], index=0)
 
-    # ------------------------ 3) VAVE Ideas --------------------------
-    st.subheader("3) Example VAVE Ideas")
-    vrows = [{"Category": (c if pd.notna(c) else ""), "Example VAVE Ideas": " • ".join(vave_for(c))} for c in cat["Category"]]
-    st.dataframe(pd.DataFrame(vrows), use_container_width=True)
+    # ============================ Dashboard =========================
+    if page == "Dashboard":
+        st.subheader("Dashboard")
 
-    # -------------------- 4) Consistency Check ----------------------
-    st.subheader("4) Consistency Check (Spend / Unit×Qty)")
-    dbg = df[["supplier","category","_spend_eur"]].copy()
-    dbg["calc_spend"] = spend_calc
-    with np.errstate(divide="ignore", invalid="ignore"):
-        dbg["consistency_ratio"] = np.where(dbg["calc_spend"]>0, dbg["_spend_eur"]/dbg["calc_spend"], np.nan)
-    dbg["Spend (€ k)"] = fmt_k(dbg["_spend_eur"])
-    dbg["Calc (€ k)"] = fmt_k(dbg["calc_spend"])
-    st.dataframe(
-        dbg[["supplier","category","Spend (€ k)","Calc (€ k)","consistency_ratio"]].head(300),
-        use_container_width=True,
-        column_config={
-            "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-            "Calc (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-        }
-    )
+        # KPIs
+        k1, k2, k3, k4 = st.columns(4)
+        total_spend = float(df["_spend_eur"].sum())
+        total_lines = int(len(df))
+        total_suppliers = int(df["supplier"].nunique())
+        total_categories = int(df["category"].nunique())
+        k1.metric("Total Spend", f"€ {total_spend:,.0f}")
+        k2.metric("# Suppliers", f"{total_suppliers:,}")
+        k3.metric("# Categories", f"{total_categories:,}")
+        k4.metric("# PO Lines", f"{total_lines:,}")
 
-    # -------------------- 5) Outlier & Opportunities -----------------
-    st.subheader("5) Outlier & Opportunity Finder (N4)")
+        if not PLOTLY_AVAILABLE:
+            st.warning(
+                "Plotly is not installed yet, so charts cannot render. "
+                "Add `plotly>=5.24` to requirements.txt. Tables below still work."
+            )
 
-    # Controls
-    col_a, col_b, col_c = st.columns([1,1,1])
-    with col_a:
-        premium_threshold = st.slider("Min premium over baseline (%)", 5, 60, 20, step=1,
-                                      help="Flag lines where Unit Price (EUR) exceeds category baseline by at least this %.")
-    with col_b:
-        min_line_opportunity = st.slider("Min line opportunity (€)", 0, 20000, 1000, step=500,
-                                         help="Ignore tiny lines; show lines with potential saving above this amount.")
-    with col_c:
-        baseline_method = st.selectbox("Baseline method", ["Median (P50)", "Trimmed mean (10%–90%)"],
-                                       help="How the baseline unit price per category is computed.")
+        # Row 1: Pie by Category • Top-20 Suppliers
+        c1, c2 = st.columns([1, 1.4])
+        with c1:
+            st.markdown("**Spend by Category (Top 10 + Other)**")
+            cat_sorted = cat.sort_values("spend_eur", ascending=False).copy()
+            top10 = cat_sorted.head(10)
+            other = pd.DataFrame([{
+                "Category":"Other",
+                "spend_eur": cat_sorted["spend_eur"].iloc[10:].sum()
+            }])
+            pie_df = pd.concat([top10[["Category","spend_eur"]], other], ignore_index=True)
+            if PLOTLY_AVAILABLE:
+                fig = px.pie(pie_df, names="Category", values="spend_eur", hole=0.35)
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                fig.update_layout(height=420, margin=dict(l=0,r=0,t=0,b=0))
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.dataframe(pie_df.rename(columns={"spend_eur":"Spend (EUR)"}))
 
-    # Compute baseline per category
-    df_bp = df.copy()
-    if "unit_price_eur" not in df_bp.columns:
-        df_bp["unit_price_eur"] = pd.to_numeric(df_bp.get("unit_price"), errors="coerce") * df_bp["rate_to_eur"]
+        with c2:
+            st.markdown("**Top 20 Suppliers by Spend**")
+            top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20)
+            if PLOTLY_AVAILABLE:
+                fig2 = px.bar(top_sup, x="Spend (€ k)", y="Supplier", orientation="h",
+                              labels={"Spend (€ k)":"Spend (€ k)"},
+                              color="Supplier", color_discrete_sequence=px.colors.qualitative.Set3)
+                fig2.update_layout(showlegend=False, height=420, margin=dict(l=0,r=0,t=0,b=0))
+                st.plotly_chart(fig2, use_container_width=True)
+            else:
+                st.dataframe(top_sup[["Supplier","Spend (€ k)"]])
 
-    def _baseline(series):
-        s = pd.to_numeric(series, errors="coerce").dropna()
-        if s.empty: return np.nan
-        if baseline_method.startswith("Median"):
-            return float(np.median(s))
-        lo, hi = np.percentile(s, [10,90])
-        s = s[(s>=lo) & (s<=hi)]
-        return float(s.mean()) if len(s) else np.nan
+        # Row 2: Stacked bar – supplier x category (top suppliers and top 5 categories)
+        st.markdown("**Supplier x Category (Stacked)**")
+        top_suppliers_list = sup_tot.sort_values("spend_eur", ascending=False).head(15)["Supplier"].tolist()
+        top_categories_list = cat.sort_values("spend_eur", ascending=False).head(5)["Category"].tolist()
 
-    baselines = (df_bp.groupby("category")["unit_price_eur"]
-                 .apply(_baseline)
-                 .rename("baseline_price_eur")
-                 .reset_index())
+        sc = sup_cat.copy()
+        sc = sc[sc["Supplier"].isin(top_suppliers_list)]
+        sc["Category_filt"] = sc["Category"].where(sc["Category"].isin(top_categories_list), "Other")
 
-    df_bp = df_bp.merge(baselines, on="category", how="left")
-    df_bp["premium_pct"] = (df_bp["unit_price_eur"] - df_bp["baseline_price_eur"]) / df_bp["baseline_price_eur"]
-    df_bp["line_opportunity_eur"] = (
-        (df_bp["unit_price_eur"] - df_bp["baseline_price_eur"]).clip(lower=0) *
-        pd.to_numeric(df_bp.get("quantity"), errors="coerce")
-    )
-    df_bp["line_opportunity_eur"] = df_bp["line_opportunity_eur"].fillna(0.0)
+        pivot = (sc.groupby(["Supplier","Category_filt"])["Spend_EUR"].sum().reset_index())
 
-    # Outlier lines filter
-    outliers = df_bp[
-        (df_bp["premium_pct"] >= premium_threshold/100.0) &
-        (df_bp["line_opportunity_eur"] >= min_line_opportunity)
-    ].copy()
+        if PLOTLY_AVAILABLE and not pivot.empty:
+            fig3 = px.bar(pivot, x="Spend_EUR", y="Supplier", color="Category_filt",
+                          orientation="h", labels={"Spend_EUR":"Spend (EUR)", "Category_filt":"Category"})
+            fig3.update_layout(height=520, barmode="stack", margin=dict(l=0,r=0,t=0,b=0))
+            st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.dataframe(pivot.sort_values(["Supplier","Spend_EUR"], ascending=[True,False]))
 
-    # Try to show a part/material/desc column if present
-    item_col = detect_item_col(raw)
-    if item_col and item_col in outliers.columns:
-        display_cols = [item_col]
+        st.divider()
+        st.caption("Tip: Use the **Deep Dives** page in the sidebar for detailed analysis and line-level opportunities.")
+
+    # ============================ Deep Dives ========================
     else:
-        display_cols = []
+        st.subheader("Deep Dives")
 
-    # Outlier Lines table
-    outliers_display = outliers.assign(
-        **{
-            "Premium (%)": (outliers["premium_pct"]*100).round(1),
-            "Unit Price (EUR)": outliers["unit_price_eur"].round(4),
-            "Baseline (EUR)": outliers["baseline_price_eur"].round(4),
-            "Opportunity (€ k)": (outliers["line_opportunity_eur"]/1000).round(0),
-        }
-    )
-    show_cols = (["category","supplier"] + display_cols +
-                 ["Unit Price (EUR)","Baseline (EUR)","Premium (%)","quantity","Opportunity (€ k)"])
-    st.markdown("**Outlier Lines** (price above baseline)")
-    st.dataframe(outliers_display[show_cols].sort_values("Opportunity (€ k)", ascending=False),
-                 use_container_width=True)
+        # Tabs for the detailed tools
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "Category Overview", "Supplier Drill-Down", "VAVE Ideas",
+            "Consistency Check", "Outliers & Opportunities", "Price vs Volume"
+        ])
 
-    # Top opportunity by Supplier
-    st.markdown("**Top Opportunity by Supplier**")
-    opp_sup = (outliers.groupby("supplier", dropna=False)["line_opportunity_eur"]
-               .sum().reset_index()
-               .assign(**{"Opportunity (€ k)": lambda x: (x["line_opportunity_eur"]/1000).round(0)})
-               .rename(columns={"supplier":"Supplier"})
-               .sort_values("Opportunity (€ k)", ascending=False))
-    st.dataframe(opp_sup[["Supplier","Opportunity (€ k)"]], use_container_width=True,
-                 column_config={"Opportunity (€ k)": st.column_config.NumberColumn(format="€ %d k")})
+        with tab1:
+            rngs = [savings_for(c) for c in cat["Category"]]
+            cat["Savings Range (%)"] = [f"{int(r[0]*100)}–{int(r[1]*100)}" for r in rngs]
+            cat["Potential Min (€ k)"] = (cat["spend_eur"] * [r[0] for r in rngs] / 1_000).round(0)
+            cat["Potential Max (€ k)"] = (cat["spend_eur"] * [r[1] for r in rngs] / 1_000).round(0)
+            st.dataframe(
+                cat[["Category","Spend (€ k)","Savings Range (%)","Potential Min (€ k)","Potential Max (€ k)","# PO Lines","# Suppliers"]],
+                use_container_width=True,
+                column_config={
+                    "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
+                    "Potential Min (€ k)": st.column_config.NumberColumn(format="€ %d k"),
+                    "Potential Max (€ k)": st.column_config.NumberColumn(format="€ %d k"),
+                    "# PO Lines": st.column_config.NumberColumn(format="%d"),
+                    "# Suppliers": st.column_config.NumberColumn(format="%d"),
+                }
+            )
 
-    # Top opportunity by Category
-    st.markdown("**Top Opportunity by Category**")
-    opp_cat = (outliers.groupby("category", dropna=False)["line_opportunity_eur"]
-               .sum().reset_index()
-               .assign(**{"Opportunity (€ k)": lambda x: (x["line_opportunity_eur"]/1000).round(0)})
-               .rename(columns={"category":"Category"})
-               .sort_values("Opportunity (€ k)", ascending=False))
-    st.dataframe(opp_cat[["Category","Opportunity (€ k)"]], use_container_width=True,
-                 column_config={"Opportunity (€ k)": st.column_config.NumberColumn(format="€ %d k")})
+        with tab2:
+            chosen_cat = st.selectbox("Choose Category:", options=cat["Category"], key="dd_cat")
+            sup = (
+                df[df["category"] == chosen_cat]
+                .groupby("supplier", dropna=False)
+                .agg(spend_eur=("_spend_eur","sum"))
+                .reset_index()
+                .assign(**{"Spend (€ k)": lambda x: fmt_k(x["spend_eur"])})
+                .rename(columns={"supplier":"Supplier"})
+                .sort_values("Spend (€ k)", ascending=False)
+            )
+            st.dataframe(
+                sup[["Supplier","Spend (€ k)"]],
+                use_container_width=True,
+                column_config={"Spend (€ k)": st.column_config.NumberColumn(format="€ %d k")}
+            )
 
-    # ===== Scatter: Unit Price (EUR) vs Quantity (Volume) [Plotly] =====
-    st.markdown("**Price vs Volume Scatter**")
+        with tab3:
+            vrows = [{"Category": (c if pd.notna(c) else ""), "Example VAVE Ideas": " • ".join(vave_for(c))} for c in cat["Category"]]
+            st.dataframe(pd.DataFrame(vrows), use_container_width=True)
 
-    scatter_df = df_bp[[
-        "category","supplier","unit_price_eur","quantity","premium_pct","line_opportunity_eur"
-    ]].copy()
+        with tab4:
+            dbg = df[["supplier","category","_spend_eur"]].copy()
+            dbg["calc_spend"] = (
+                pd.to_numeric(df.get("unit_price"), errors="coerce") *
+                pd.to_numeric(df.get("quantity"), errors="coerce") *
+                df["rate_to_eur"]
+            )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                dbg["consistency_ratio"] = np.where(dbg["calc_spend"]>0, dbg["_spend_eur"]/dbg["calc_spend"], np.nan)
+            dbg["Spend (€ k)"] = fmt_k(dbg["_spend_eur"])
+            dbg["Calc (€ k)"] = fmt_k(dbg["calc_spend"])
+            st.dataframe(
+                dbg[["supplier","category","Spend (€ k)","Calc (€ k)","consistency_ratio"]].head(300),
+                use_container_width=True,
+                column_config={
+                    "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
+                    "Calc (€ k)": st.column_config.NumberColumn(format="€ %d k"),
+                }
+            )
 
-    scatter_df = scatter_df[
-        scatter_df["unit_price_eur"].notna() &
-        scatter_df["quantity"].notna() &
-        (scatter_df["quantity"] > 0)
-    ].copy()
+        with tab5:
+            col_a, col_b, col_c = st.columns([1,1,1])
+            with col_a:
+                premium_threshold = st.slider("Min premium over baseline (%)", 5, 60, 20, step=1)
+            with col_b:
+                min_line_opportunity = st.slider("Min line opportunity (€)", 0, 20000, 1000, step=500)
+            with col_c:
+                baseline_method = st.selectbox("Baseline method", ["Median (P50)", "Trimmed mean (10%–90%)"])
 
-    # dropdowns with "All"
-    cat_options = ["All"] + sorted([c for c in scatter_df["category"].dropna().unique()])
-    cat_choice = st.selectbox("Category (for scatter):", cat_options, index=0)
+            df_bp = df.copy()
+            if "unit_price_eur" not in df_bp.columns:
+                df_bp["unit_price_eur"] = pd.to_numeric(df_bp.get("unit_price"), errors="coerce") * df_bp["rate_to_eur"]
 
-    if cat_choice != "All":
-        sup_options = ["All"] + sorted(
-            [s for s in scatter_df.loc[scatter_df["category"]==cat_choice, "supplier"].dropna().unique()]
-        )
-    else:
-        sup_options = ["All"] + sorted([s for s in scatter_df["supplier"].dropna().unique()])
+            def _baseline(series):
+                s = pd.to_numeric(series, errors="coerce").dropna()
+                if s.empty: return np.nan
+                if baseline_method.startswith("Median"):
+                    return float(np.median(s))
+                lo, hi = np.percentile(s, [10,90])
+                s = s[(s>=lo) & (s<=hi)]
+                return float(s.mean()) if len(s) else np.nan
 
-    sup_choice = st.selectbox("Supplier (for scatter):", sup_options, index=0)
+            baselines = (df_bp.groupby("category")["unit_price_eur"]
+                         .apply(_baseline)
+                         .rename("baseline_price_eur")
+                         .reset_index())
 
-    # apply filters
-    sc = scatter_df.copy()
-    if cat_choice != "All":
-        sc = sc[sc["category"] == cat_choice]
-    if sup_choice != "All":
-        sc = sc[sc["supplier"] == sup_choice]
+            df_bp = df_bp.merge(baselines, on="category", how="left")
+            df_bp["premium_pct"] = (df_bp["unit_price_eur"] - df_bp["baseline_price_eur"]) / df_bp["baseline_price_eur"]
+            df_bp["line_opportunity_eur"] = (
+                (df_bp["unit_price_eur"] - df_bp["baseline_price_eur"]).clip(lower=0) *
+                pd.to_numeric(df_bp.get("quantity"), errors="coerce")
+            ).fillna(0.0)
 
-    if sc.empty:
-        st.info("No rows match the current filters.")
-    else:
-        # clamp axes to 1st–99th percentiles for readability
-        q_low, q_high = np.nanpercentile(sc["quantity"], [0, 99])
-        p_low, p_high = np.nanpercentile(sc["unit_price_eur"], [0, 99])
-        if q_low == q_high: q_high = q_low + 1
-        if p_low == p_high: p_high = p_low + 1
+            outliers = df_bp[
+                (df_bp["premium_pct"] >= premium_threshold/100.0) &
+                (df_bp["line_opportunity_eur"] >= min_line_opportunity)
+            ].copy()
 
-        # optional: log scale toggle for volume
-        use_log_x = st.checkbox("Log scale for Quantity", value=False)
+            item_col = detect_item_col(raw)
+            display_cols = [item_col] if item_col and item_col in outliers.columns else []
 
-        fig = px.scatter(
-            sc,
-            x="quantity",
-            y="unit_price_eur",
-            color="premium_pct",
-            size="line_opportunity_eur",
-            hover_data={
-                "category": True,
-                "supplier": True,
-                "quantity": ":,.0f",
-                "unit_price_eur": ":,.4f",
-                "premium_pct": ".1%",
-                "line_opportunity_eur": ":,.0f",
-            },
-            color_continuous_scale="RdYlGn_r",  # red=high premium, green=low
-            labels={
-                "quantity": "Quantity (Volume)",
-                "unit_price_eur": "Actual unit price (EUR)",
-                "premium_pct": "Premium %",
-                "line_opportunity_eur": "Opportunity (€)",
-            },
-        )
+            outliers_display = outliers.assign(
+                **{
+                    "Premium (%)": (outliers["premium_pct"]*100).round(1),
+                    "Unit Price (EUR)": outliers["unit_price_eur"].round(4),
+                    "Baseline (EUR)": outliers["baseline_price_eur"].round(4),
+                    "Opportunity (€ k)": (outliers["line_opportunity_eur"]/1000).round(0),
+                }
+            )
+            show_cols = (["category","supplier"] + display_cols +
+                         ["Unit Price (EUR)","Baseline (EUR)","Premium (%)","quantity","Opportunity (€ k)"])
+            st.dataframe(outliers_display[show_cols].sort_values("Opportunity (€ k)", ascending=False),
+                         use_container_width=True)
 
-        fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
-        fig.update_xaxes(range=[q_low, q_high], type="log" if use_log_x else "linear")
-        fig.update_yaxes(range=[p_low, p_high])
+        with tab6:
+            st.markdown("**Price vs Volume Scatter**")
+            if not PLOTLY_AVAILABLE:
+                st.warning("Plotly is not installed. Add `plotly>=5.24` to requirements.txt to enable this chart.")
+            else:
+                # reuse the computed df_bp & premium if present; otherwise compute quickly
+                if 'df_bp' not in locals():
+                    df_bp = df.copy()
+                    if "unit_price_eur" not in df_bp.columns:
+                        df_bp["unit_price_eur"] = pd.to_numeric(df_bp.get("unit_price"), errors="coerce") * df_bp["rate_to_eur"]
+                    baselines = (df_bp.groupby("category")["unit_price_eur"].median().rename("baseline_price_eur").reset_index())
+                    df_bp = df_bp.merge(baselines, on="category", how="left")
+                    df_bp["premium_pct"] = (df_bp["unit_price_eur"] - df_bp["baseline_price_eur"]) / df_bp["baseline_price_eur"]
+                    df_bp["line_opportunity_eur"] = (
+                        (df_bp["unit_price_eur"] - df_bp["baseline_price_eur"]).clip(lower=0) *
+                        pd.to_numeric(df_bp.get("quantity"), errors="coerce")
+                    ).fillna(0.0)
 
-        st.plotly_chart(fig, use_container_width=True)
+                scatter_df = df_bp[[
+                    "category","supplier","unit_price_eur","quantity","premium_pct","line_opportunity_eur"
+                ]].copy()
+                scatter_df = scatter_df[
+                    scatter_df["unit_price_eur"].notna() &
+                    scatter_df["quantity"].notna() &
+                    (scatter_df["quantity"] > 0)
+                ].copy()
 
-    # ------------------------- 6) Download pack --------------------
-    st.markdown("#### Download full results (XLSX)")
+                cat_options = ["All"] + sorted([c for c in scatter_df["category"].dropna().unique()])
+                cat_choice = st.selectbox("Category (for scatter):", cat_options, index=0, key="sc_cat")
+
+                if cat_choice != "All":
+                    sup_options = ["All"] + sorted(
+                        [s for s in scatter_df.loc[scatter_df["category"]==cat_choice, "supplier"].dropna().unique()]
+                    )
+                else:
+                    sup_options = ["All"] + sorted([s for s in scatter_df["supplier"].dropna().unique()])
+
+                sup_choice = st.selectbox("Supplier (for scatter):", sup_options, index=0, key="sc_sup")
+
+                sc = scatter_df.copy()
+                if cat_choice != "All":
+                    sc = sc[sc["category"] == cat_choice]
+                if sup_choice != "All":
+                    sc = sc[sc["supplier"] == sup_choice]
+
+                if sc.empty:
+                    st.info("No rows match the current filters.")
+                else:
+                    q_low, q_high = np.nanpercentile(sc["quantity"], [0, 99])
+                    p_low, p_high = np.nanpercentile(sc["unit_price_eur"], [0, 99])
+                    if q_low == q_high: q_high = q_low + 1
+                    if p_low == p_high: p_high = p_low + 1
+
+                    use_log_x = st.checkbox("Log scale for Quantity", value=False, key="log_qty")
+
+                    fig = px.scatter(
+                        sc,
+                        x="quantity",
+                        y="unit_price_eur",
+                        color="premium_pct",
+                        size="line_opportunity_eur",
+                        hover_data={
+                            "category": True,
+                            "supplier": True,
+                            "quantity": ":,.0f",
+                            "unit_price_eur": ":,.4f",
+                            "premium_pct": ".1%",
+                            "line_opportunity_eur": ":,.0f",
+                        },
+                        color_continuous_scale="RdYlGn_r",
+                        labels={
+                            "quantity": "Quantity (Volume)",
+                            "unit_price_eur": "Actual unit price (EUR)",
+                            "premium_pct": "Premium %",
+                            "line_opportunity_eur": "Opportunity (€)",
+                        },
+                    )
+                    fig.update_layout(height=420, margin=dict(l=0, r=0, t=10, b=0))
+                    fig.update_xaxes(range=[q_low, q_high], type="log" if use_log_x else "linear")
+                    fig.update_yaxes(range=[p_low, p_high])
+                    st.plotly_chart(fig, use_container_width=True)
+
+    # ------------------------- Download pack --------------------
+    st.divider()
+    st.markdown("#### Download full dataset & summaries (XLSX)")
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         df.to_excel(w, index=False, sheet_name="Lines")
         cat.to_excel(w, index=False, sheet_name="Categories")
-        sup.to_excel(w, index=False, sheet_name="Suppliers_Selected")
-        pd.DataFrame(vrows).to_excel(w, index=False, sheet_name="VAVE_Ideas")
-        outliers_display.to_excel(w, index=False, sheet_name="Outlier_Lines")
-        opp_sup.to_excel(w, index=False, sheet_name="Opp_by_Supplier")
-        opp_cat.to_excel(w, index=False, sheet_name="Opp_by_Category")
+        sup_tot.to_excel(w, index=False, sheet_name="Suppliers")
+        sup_cat.to_excel(w, index=False, sheet_name="Supplier_x_Category")
     st.download_button(
         "Download results.xlsx",
         buf.getvalue(),
@@ -533,5 +612,5 @@ else:
     st.info(
         "Upload an Excel file to begin. If Category/Supplier/Currency/Unit Price/Quantity aren’t detected automatically, "
         "you’ll be prompted to select the correct columns. All spends are shown in EUR (latest FX) as € k. "
-        "Use the Outlier & Opportunity Finder to spot high-price lines and biggest saving levers, and the Price vs Volume scatter to see economies of scale."
+        "Use the sidebar to access the **Dashboard** or the **Deep Dives**."
     )
