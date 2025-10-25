@@ -1,15 +1,15 @@
 # Procurement Diagnostics — Final (Auto FX → EUR)
 # Dashboard + Deep Dives
-# - Robust ECB FX conversion; resilient column detection; spend-source selector
-# - Dashboard: KPIs, pie by category, top-20 suppliers, stacked bar supplier-category
-# - Deep Dives: Category Overview, Supplier Drill-Down, VAVE, Consistency, Outliers, Price-vs-Volume scatter
+# - Robust ECB FX conversion; resilient column detection; spend-source selector (Detected vs Unit×Qty×FX vs Auto-validate)
+# - Dashboard: KPI cards, donut by category, top suppliers bar w/ labels, supplier×category (% mix / EUR)
+# - Deep Dives: Category Overview, Supplier Drill-Down, VAVE, Consistency, Outliers, Price-vs-Volume scatter (Plotly)
 
 import io, re
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-# Plotly (guard import so app still loads even if Plotly missing; advise requirements.txt)
+# Plotly (guard import so app still loads even if Plotly missing)
 try:
     import plotly.express as px
     PLOTLY_AVAILABLE = True
@@ -26,6 +26,27 @@ st.caption(
     "Upload your Excel spend cube. The app auto-detects columns, parses numbers, converts to EUR "
     "(latest ECB FX), and shows diagnostics in € k. Use the **sidebar** to switch between the "
     "**Dashboard** and **Deep Dives**."
+)
+
+# ---- lightweight CSS for KPI cards / spacing ----
+st.markdown(
+    """
+    <style>
+      .kpi-card {
+        background: #ffffff;
+        border: 1px solid #EEE;
+        border-radius: 14px;
+        padding: 16px 18px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+      }
+      .kpi-title { font-size: 0.95rem; color: #6b7280; margin-bottom: 6px; }
+      .kpi-value { font-size: 2.0rem; font-weight: 700; line-height: 1.1; letter-spacing: -0.02rem; }
+      .mt-8 { margin-top: 8px; }
+      .mt-16 { margin-top: 16px; }
+      .mt-24 { margin-top: 24px; }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx", "xls"])
@@ -294,7 +315,7 @@ if uploaded:
         suppliers=("supplier", pd.Series.nunique)
     ).reset_index()
     cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
-    cat.rename(columns={"category":"Category","lines":"# PO Lines","suppliers":"# Suppliers"}, inplace=True)
+    cat.rename(columns={"category":"Category","lines":"# PO Lines","# PO Lines":"# PO Lines","suppliers":"# Suppliers"}, inplace=True)
 
     # Supplier rollup
     sup_tot = df.groupby("supplier", dropna=False).agg(
@@ -317,16 +338,25 @@ if uploaded:
     if page == "Dashboard":
         st.subheader("Dashboard")
 
-        # KPIs
-        k1, k2, k3, k4 = st.columns(4)
+        # ---------- KPI CARDS ----------
         total_spend = float(df["_spend_eur"].sum())
         total_lines = int(len(df))
         total_suppliers = int(df["supplier"].nunique())
         total_categories = int(df["category"].nunique())
-        k1.metric("Total Spend", f"€ {total_spend:,.0f}")
-        k2.metric("# Suppliers", f"{total_suppliers:,}")
-        k3.metric("# Categories", f"{total_categories:,}")
-        k4.metric("# PO Lines", f"{total_lines:,}")
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown('<div class="kpi-card"><div class="kpi-title">Total Spend</div>'
+                        f'<div class="kpi-value">€ {total_spend/1_000_000:,.1f} M</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown('<div class="kpi-card"><div class="kpi-title">Suppliers</div>'
+                        f'<div class="kpi-value">{total_suppliers:,}</div></div>', unsafe_allow_html=True)
+        with c3:
+            st.markdown('<div class="kpi-card"><div class="kpi-title">Categories</div>'
+                        f'<div class="kpi-value">{total_categories:,}</div></div>', unsafe_allow_html=True)
+        with c4:
+            st.markdown('<div class="kpi-card"><div class="kpi-title">PO Lines</div>'
+                        f'<div class="kpi-value">{total_lines:,}</div></div>', unsafe_allow_html=True)
 
         if not PLOTLY_AVAILABLE:
             st.warning(
@@ -334,55 +364,112 @@ if uploaded:
                 "Add `plotly>=5.24` to requirements.txt. Tables below still work."
             )
 
-        # Row 1: Pie by Category • Top-20 Suppliers
-        c1, c2 = st.columns([1, 1.4])
+        # ---------- CONTROLS ----------
+        st.markdown('<div class="mt-16"></div>', unsafe_allow_html=True)
+        dash_cols = st.columns([1, 1])
+        with dash_cols[0]:
+            top_cat_n = st.slider("How many categories in donut", 5, 15, 10, step=1)
+        with dash_cols[1]:
+            sup_n = st.slider("Top suppliers in bar", 10, 30, 20, step=5)
+
+        # ---------- DONUT: Spend by Category ----------
+        c1, c2 = st.columns([1.05, 1.35])
+
         with c1:
-            st.markdown("**Spend by Category (Top 10 + Other)**")
+            st.markdown("**Spend by Category**")
             cat_sorted = cat.sort_values("spend_eur", ascending=False).copy()
-            top10 = cat_sorted.head(10)
-            other = pd.DataFrame([{
-                "Category":"Other",
-                "spend_eur": cat_sorted["spend_eur"].iloc[10:].sum()
-            }])
-            pie_df = pd.concat([top10[["Category","spend_eur"]], other], ignore_index=True)
+            topN = cat_sorted.head(top_cat_n)
+            other_val = cat_sorted["spend_eur"].iloc[top_cat_n:].sum()
+            donut_df = pd.concat([
+                topN[["Category", "spend_eur"]],
+                pd.DataFrame([{"Category":"Other", "spend_eur": other_val}])
+            ], ignore_index=True)
+
             if PLOTLY_AVAILABLE:
-                fig = px.pie(pie_df, names="Category", values="spend_eur", hole=0.35)
-                fig.update_traces(textposition='inside', textinfo='percent+label')
-                fig.update_layout(height=420, margin=dict(l=0,r=0,t=0,b=0))
+                fig = px.pie(
+                    donut_df, names="Category", values="spend_eur",
+                    hole=0.45, color_discrete_sequence=px.colors.qualitative.Set3
+                )
+                fig.update_traces(textposition="outside", textinfo="percent+label", pull=[0.06]+[0]*(len(donut_df)-1))
+                fig.update_layout(
+                    height=520, margin=dict(l=10,r=10,t=10,b=10),
+                    showlegend=True, legend_title_text="Category", legend=dict(orientation="v", x=1.02, y=0.5)
+                )
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.dataframe(pie_df.rename(columns={"spend_eur":"Spend (EUR)"}))
+                st.dataframe(donut_df.rename(columns={"spend_eur":"Spend (EUR)"}))
 
+        # ---------- BAR: Top suppliers ----------
         with c2:
-            st.markdown("**Top 20 Suppliers by Spend**")
-            top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20)
+            st.markdown("**Top Suppliers by Spend**")
+            top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(sup_n).copy()
             if PLOTLY_AVAILABLE:
-                fig2 = px.bar(top_sup, x="Spend (€ k)", y="Supplier", orientation="h",
-                              labels={"Spend (€ k)":"Spend (€ k)"},
-                              color="Supplier", color_discrete_sequence=px.colors.qualitative.Set3)
-                fig2.update_layout(showlegend=False, height=420, margin=dict(l=0,r=0,t=0,b=0))
+                fig2 = px.bar(
+                    top_sup,
+                    x="spend_eur", y="Supplier",
+                    orientation="h",
+                    color="spend_eur",
+                    color_continuous_scale="Blues",
+                    labels={"spend_eur":"Spend (EUR)"},
+                )
+                fig2.update_traces(
+                    hovertemplate="%{y}<br>€ %{x:,.0f}",
+                    text=[f"€ {v/1_000_000:,.1f} M" for v in top_sup["spend_eur"]],
+                    textposition="outside"
+                )
+                fig2.update_layout(
+                    coloraxis_showscale=False,
+                    height=520, margin=dict(l=10,r=20,t=10,b=10),
+                    xaxis=dict(title="", showgrid=True, zeroline=False),
+                    yaxis=dict(title="Supplier", categoryorder="total ascending")
+                )
                 st.plotly_chart(fig2, use_container_width=True)
             else:
                 st.dataframe(top_sup[["Supplier","Spend (€ k)"]])
 
-        # Row 2: Stacked bar – supplier x category (top suppliers and top 5 categories)
-        st.markdown("**Supplier x Category (Stacked)**")
+        st.markdown('<div class="mt-24"></div>', unsafe_allow_html=True)
+
+        # ---------- SUPPLIER × CATEGORY (Stacked / % mix) ----------
+        st.markdown("**Supplier × Category Mix**")
+
+        # focus the chart: top suppliers and top categories; everything else → Other
         top_suppliers_list = sup_tot.sort_values("spend_eur", ascending=False).head(15)["Supplier"].tolist()
-        top_categories_list = cat.sort_values("spend_eur", ascending=False).head(5)["Category"].tolist()
+        top_categories_list = cat.sort_values("spend_eur", ascending=False).head(6)["Category"].tolist()
 
         sc = sup_cat.copy()
         sc = sc[sc["Supplier"].isin(top_suppliers_list)]
         sc["Category_filt"] = sc["Category"].where(sc["Category"].isin(top_categories_list), "Other")
 
-        pivot = (sc.groupby(["Supplier","Category_filt"])["Spend_EUR"].sum().reset_index())
+        # choose between % mix vs absolute EUR
+        view = st.radio("View", ["% mix", "EUR"], horizontal=True, index=0)
 
-        if PLOTLY_AVAILABLE and not pivot.empty:
-            fig3 = px.bar(pivot, x="Spend_EUR", y="Supplier", color="Category_filt",
-                          orientation="h", labels={"Spend_EUR":"Spend (EUR)", "Category_filt":"Category"})
-            fig3.update_layout(height=520, barmode="stack", margin=dict(l=0,r=0,t=0,b=0))
+        piv = sc.groupby(["Supplier","Category_filt"])["Spend_EUR"].sum().reset_index()
+        if view == "% mix":
+            total_by_sup = piv.groupby("Supplier")["Spend_EUR"].transform("sum")
+            piv["value"] = np.where(total_by_sup>0, piv["Spend_EUR"]/total_by_sup, 0.0)
+            value_label = "Share (%)"
+            hover_tpl = "%{y} • %{legendgroup}<br>%{x:.1%}"
+        else:
+            piv["value"] = piv["Spend_EUR"]
+            value_label = "Spend (EUR)"
+            hover_tpl = "%{y} • %{legendgroup}<br>€ %{x:,.0f}"
+
+        if PLOTLY_AVAILABLE and not piv.empty:
+            fig3 = px.bar(
+                piv, x="value", y="Supplier", color="Category_filt",
+                orientation="h",
+                labels={"value": value_label, "Category_filt":"Category"},
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            fig3.update_traces(hovertemplate=hover_tpl)
+            fig3.update_layout(
+                height=520, barmode="stack",
+                margin=dict(l=10,r=10,t=10,b=10),
+                xaxis=dict(tickformat=".0%" if view=="% mix" else None, range=[0,1] if view=="% mix" else None)
+            )
             st.plotly_chart(fig3, use_container_width=True)
         else:
-            st.dataframe(pivot.sort_values(["Supplier","Spend_EUR"], ascending=[True,False]))
+            st.dataframe(piv.sort_values(["Supplier","value"], ascending=[True,False]))
 
         st.divider()
         st.caption("Tip: Use the **Deep Dives** page in the sidebar for detailed analysis and line-level opportunities.")
