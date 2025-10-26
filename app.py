@@ -1,6 +1,11 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer (UI polish 2: uniform KPI, chart spacing/titles,
-# supplier-category mix, cooler DQ badges)
+# ProcureIQ — Spend Explorer
+# A polished Streamlit app for ad-hoc Procurement diagnostics
+# - Uniform KPI row
+# - Crisp chart separation + titles
+# - Supplier→Category mix (Top-20) with % shares (no 'barnorm' dependency)
+# - Data-Quality card with pill badges + sample rows
+# - FX conversion via latest ECB
 # ──────────────────────────────────────────────────────────────────────────────
 
 import io, re
@@ -11,78 +16,94 @@ import streamlit as st
 # Charts
 try:
     import plotly.express as px
-    PLOTLY_AVAILABLE = True
+    PLOTLY = True
 except Exception:
-    PLOTLY_AVAILABLE = False
+    PLOTLY = False
 
 from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
 
-# --------------------------- THEME & STYLES -----------------------------------
-P_PRIMARY = "#10b981"     # teal-500
-P_ACCENT  = "#6366f1"     # indigo-500
-P_BG_SOFT = "#f8fafc"     # slate-50
-P_TEXT_2  = "#64748b"     # slate-500
-P_BORDER  = "#e5e7eb"     # gray-200
-P_TEXT    = "#111827"     # slate-900
+# ============================== THEME / CSS ===================================
+P_PRIMARY = "#06b6d4"   # cyan-500
+P_DEEP    = "#0ea5e9"   # sky-500
+P_ACCENT  = "#8b5cf6"   # violet-500
+P_TEXT    = "#0f172a"   # slate-900
+P_TEXT2   = "#475569"   # slate-600
+P_BORDER  = "#e2e8f0"   # slate-200
+P_SOFTBG  = "#f8fafc"   # slate-50
+P_OK      = "#10b981"   # emerald-500
+P_WARN    = "#f59e0b"   # amber-500
+P_BAD     = "#ef4444"   # red-500
 
 st.markdown(
     f"""
     <style>
-      html, body, [class*="css"] {{
-        font-kerning: normal !important;
-      }}
+      html, body, [class*="css"] {{ font-kerning: normal !important; }}
+
+      /* Header banner */
       .banner {{
-        background: radial-gradient(1200px 400px at 20% -20%, #ecfeff 10%, #eef2ff 60%, white 80%);
+        background: linear-gradient(135deg, rgba(14,165,233,.10), rgba(139,92,246,.06));
         border: 1px solid {P_BORDER};
-        border-radius: 18px; padding: 20px 22px; margin-bottom: 10px;
+        border-radius: 18px;
+        padding: 20px 22px 18px 22px;
+        margin: 6px 0 10px 0;
+        box-shadow: 0 2px 6px rgba(2,8,23,.04);
       }}
-      .app-title {{ font-size:32px; font-weight:800; letter-spacing:-.02rem; margin:0; color:{P_TEXT}; }}
-      .app-sub   {{ color:{P_TEXT_2}; font-size:14px; margin:6px 0 0 0; }}
+      .app-title {{ font-size: 32px; font-weight: 800; letter-spacing: -.02rem; margin: 0; color: {P_TEXT}; }}
+      .app-sub   {{ color: {P_TEXT2}; font-size: 14px; margin: 6px 0 0 0; }}
 
-      /* KPI cards — uniform sizing */
-      .kpi-grid {{ display:grid; grid-template-columns: repeat(5, 1fr); gap:14px; }}
-      .kpi-card {{ background:#fff;border:1px solid {P_BORDER};border-radius:14px;padding:16px 18px;
-                   box-shadow:0 1px 3px rgba(0,0,0,.04); min-height:110px; display:flex; flex-direction:column; justify-content:center; }}
-      .kpi-title {{ font-size:.95rem;color:{P_TEXT_2};margin-bottom:8px; }}
-      .kpi-value-tight {{ font-size:1.8rem;font-weight:800;letter-spacing:-.02rem; white-space:nowrap; }}
-      .kpi-unit {{ font-weight:700; font-size:1.1rem; color:{P_TEXT_2}; margin-left:.3rem; }}
+      /* KPI row */
+      .kpi-grid {{
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 14px;
+        margin: 12px 0 0 0;
+      }}
+      .kpi-card {{
+        background: #fff;
+        border: 1px solid {P_BORDER};
+        border-radius: 14px;
+        min-height: 110px;
+        padding: 16px 18px;
+        display: flex; flex-direction: column; justify-content: center;
+        box-shadow: 0 1px 3px rgba(2,8,23,.05);
+      }}
+      .kpi-title {{ font-size: 0.95rem; color: {P_TEXT2}; margin-bottom: 8px; }}
+      .kpi-value {{ font-size: 1.8rem; font-weight: 800; letter-spacing: -.02rem; white-space: nowrap; }}
+      .kpi-unit  {{ font-weight: 700; font-size: 1.1rem; color: {P_TEXT2}; margin-left: .3rem; }}
 
-      /* Chart titles spacing */
-      .block-title {{ font-weight:800; font-size:1.05rem; margin:6px 0 10px 4px; color:{P_TEXT}; }}
+      .block-title {{ font-weight: 800; font-size: 1.05rem; margin: 6px 0 8px 6px; color: {P_TEXT}; }}
+      .spacer-12 {{ margin-top: 12px; }}
+      .spacer-20 {{ margin-top: 20px; }}
+      .spacer-24 {{ margin-top: 24px; }}
 
-      /* Data Quality pills */
-      .dq-row {{ display:flex; flex-wrap:wrap; gap:10px; margin:4px 0 12px 0; }}
+      /* Data Quality */
+      .dq-row {{ display:flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 12px 0; }}
       .dq-pill {{
-        display:flex; align-items:center; gap:8px;
-        padding:10px 12px; border-radius:12px; border:1px solid {P_BORDER};
-        background:#fff; color:{P_TEXT};
-        box-shadow:0 1px 2px rgba(0,0,0,.03);
-        min-width:220px; height:48px;
+        display:flex; align-items:center; gap:10px;
+        padding: 11px 13px; border-radius: 12px; border:1px solid {P_BORDER};
+        background:#fff; min-width: 240px; height: 50px;
+        box-shadow:0 1px 2px rgba(2,8,23,.03);
       }}
-      .dq-ok    {{ border-color:#bbf7d0; background:#ecfdf5; }}
-      .dq-warn  {{ border-color:#fed7aa; background:#fff7ed; }}
-      .dq-bad   {{ border-color:#fecaca; background:#fef2f2; }}
-      .dq-lbl   {{ font-size:13px; color:{P_TEXT_2}; }}
-      .dq-val   {{ font-weight:800; font-size:16px; color:{P_TEXT}; }}
+      .ok   {{ border-color:#bbf7d0; background:#ecfdf5; }}
+      .warn {{ border-color:#fed7aa; background:#fff7ed; }}
+      .bad  {{ border-color:#fecaca; background:#fef2f2; }}
+      .dq-lbl {{ font-size: 13px; color: {P_TEXT2}; }}
+      .dq-val {{ font-weight: 800; font-size: 16px; color: {P_TEXT}; }}
 
-      .mt-8 {{margin-top:8px;}} .mt-12 {{margin-top:12px;}} .mt-16 {{margin-top:16px;}} .mt-20 {{margin-top:20px;}}
-      .mt-24 {{margin-top:24px;}} .mb-0 {{margin-bottom:0;}}
-      [data-testid="stSidebar"]{{min-width:360px;max-width:400px;}}
+      [data-testid="stSidebar"] {{ min-width: 360px; max-width: 400px; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ------------------------------- HEADER ---------------------------------------
+# ============================== HEADER ========================================
 st.markdown(
     """
     <div class="banner">
       <div class="app-title">ProcureIQ — Spend Explorer</div>
-      <div class="app-sub">
-        Upload your spend cube, map columns in the sidebar, pick the category source, and explore.
-      </div>
+      <div class="app-sub">Upload your spend cube, map columns in the sidebar, pick the category source, and explore.</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -90,9 +111,8 @@ st.markdown(
 
 BASE = "EUR"
 
-# ------------------------------- HELPERS --------------------------------------
-def normalize_headers(cols):
-    return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
+# ============================== HELPERS =======================================
+def normalize_headers(cols): return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 
 def parse_number_robust(x):
     if pd.isna(x): return np.nan
@@ -114,7 +134,7 @@ def ensure_numeric_spend(s: pd.Series) -> pd.Series:
     return s.fillna(0.0).astype(float)
 
 CURRENCY_SYMBOL_MAP = {"€":"EUR","$":"USD","£":"GBP","¥":"JPY","₩":"KRW","₹":"INR","₺":"TRY","R$":"BRL","S$":"SGD"}
-ISO_3 = {"EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD","CAD","MXN","BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS","NGN","VND","RUB"}
+ISO_3 = {"EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD","CAD","MXN","BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS","VND","NGN","RUB"}
 
 def detect_iso_from_text(text):
     if text is None or (isinstance(text,float) and np.isnan(text)): return None
@@ -186,8 +206,7 @@ def detect_spend_column(df):
     med = {c: pd.to_numeric(df[c].apply(parse_number_robust), errors="coerce").median(skipna=True) for c in hits}
     return max(med, key=med.get)
 
-def fmt_k(s: pd.Series) -> pd.Series:
-    return (s/1_000.0).round(0)
+def fmt_k(s: pd.Series) -> pd.Series: return (s/1_000.0).round(0)
 
 def detect_part_number_cols(df):
     norm = {c: c.lower() for c in df.columns}
@@ -199,7 +218,7 @@ def detect_part_number_cols(df):
     hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
     return hits
 
-# ------------------------------- UPLOAD ---------------------------------------
+# ============================== UPLOAD ========================================
 with st.sidebar:
     st.header("Data")
     uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
@@ -211,7 +230,7 @@ if not uploaded:
 raw = pd.read_excel(uploaded)
 raw.columns = [str(c) for c in raw.columns]
 
-# ---------------------- MAPPING & CATEGORY SOURCE -----------------------------
+# ============================== MAPPING =======================================
 mapping = suggest_columns(raw)
 
 with st.sidebar:
@@ -230,7 +249,7 @@ for k in ["supplier","currency","unit_price","quantity","category","cat_family",
     if k in mapping:
         df[k] = raw[mapping[k]]
 
-# category candidates
+# Category candidates
 cat_cands, label_to_col = [], {}
 def _add_cand(label, colname):
     if colname and colname in df.columns and df[colname].notna().any():
@@ -259,7 +278,7 @@ with st.sidebar:
 resolved_cat_col = label_to_col[cat_choice]
 df["category_resolved"] = df[resolved_cat_col].copy()
 
-# -------------------------- PARSE + FX + SPEND --------------------------------
+# ============================== FX + SPEND ====================================
 df["unit_price"] = df["unit_price"].apply(parse_number_robust)
 df["quantity"]   = df["quantity"].apply(parse_number_robust)
 
@@ -331,22 +350,18 @@ else:
 
 df["_spend_eur"] = ensure_numeric_spend(df["_spend_eur"])
 
-with st.sidebar:
-    st.caption(
-        f"Detected total: € {np.nansum(spend_detected):,.0f} • "
-        f"Unit×Qty×FX total: € {np.nansum(spend_calc):,.0f}"
-    )
-
-# --------------------------- AGGREGATES ---------------------------------------
+# ============================== AGGREGATES ====================================
 cat = (df.groupby("category_resolved", dropna=False)
-       .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
+       .agg(spend_eur=("_spend_eur","sum"),
+            lines=("category_resolved","count"),
             suppliers=("supplier", pd.Series.nunique))
        .reset_index()
        .rename(columns={"category_resolved":"Category","lines":"# PO Lines","suppliers":"# Suppliers"}))
 cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
 
 sup_tot = (df.groupby("supplier", dropna=False)
-           .agg(spend_eur=("_spend_eur","sum"), lines=("supplier","count"),
+           .agg(spend_eur=("_spend_eur","sum"),
+                lines=("supplier","count"),
                 categories=("category_resolved", pd.Series.nunique))
            .reset_index()
            .rename(columns={"supplier":"Supplier"}))
@@ -358,12 +373,10 @@ part_count = 0
 if part_cols:
     chosen = None
     for c in part_cols:
-        if raw[c].notna().sum() > 0:
-            chosen = c; break
-    if chosen:
-        part_count = int(raw[chosen].astype(str).replace({"nan":np.nan}).nunique())
+        if raw[c].notna().sum() > 0: chosen = c; break
+    if chosen: part_count = int(raw[chosen].astype(str).replace({"nan":np.nan}).nunique())
 
-# ----------------------------- NAV -------------------------------------------
+# ============================== NAV ===========================================
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
 # ============================== DASHBOARD =====================================
@@ -373,48 +386,49 @@ if page == "Dashboard":
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    # Uniform KPI row
+    # ---- KPI row (uniform) ----
     st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">Total Spend</div>
-          <div class="kpi-value-tight">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
+          <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
         </div>
     ''', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">Categories</div>
-          <div class="kpi-value-tight">{total_categories:,}</div>
+          <div class="kpi-value">{total_categories:,}</div>
         </div>
     ''', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">Suppliers</div>
-          <div class="kpi-value-tight">{total_suppliers:,}</div>
+          <div class="kpi-value">{total_suppliers:,}</div>
         </div>
     ''', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">Part Numbers</div>
-          <div class="kpi-value-tight">{part_count:,}</div>
+          <div class="kpi-value">{part_count:,}</div>
         </div>
     ''', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">PO Lines</div>
-          <div class="kpi-value-tight">{total_lines:,}</div>
+          <div class="kpi-value">{total_lines:,}</div>
         </div>
     ''', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="mt-16"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="spacer-20"></div>', unsafe_allow_html=True)
 
-    # Wider layout: donut left (with title), bars far right with spacing
-    lcol, rcol = st.columns([1.0, 2.4], gap="large")
+    # ---- Donut left, bars right with extra whitespace ----
+    left, right = st.columns([1.05, 2.2], gap="large")
 
-    with lcol:
+    with left:
         st.markdown('<div class="block-title">Spend by Category</div>', unsafe_allow_html=True)
         st.slider("Top categories in donut", 5, min(15, len(cat)), min(10, len(cat)), key="donutN")
+
         donut_raw = (df.groupby("category_resolved", dropna=False)["_spend_eur"].sum()
                        .reset_index().rename(columns={"category_resolved":"Category","_spend_eur":"spend_eur"}))
         donut_raw = donut_raw[donut_raw["spend_eur"]>0].sort_values("spend_eur", ascending=False)
@@ -425,8 +439,11 @@ if page == "Dashboard":
         else:
             topN_df = donut_raw.head(st.session_state.donutN)
             other = float(donut_raw["spend_eur"].iloc[st.session_state.donutN:].sum())
-            donut_df = pd.concat([topN_df, pd.DataFrame([{"Category":"Other","spend_eur":other}]) if other>0 else pd.DataFrame()], ignore_index=True)
-            if PLOTLY_AVAILABLE:
+            donut_df = pd.concat(
+                [topN_df, pd.DataFrame([{"Category":"Other","spend_eur":other}]) if other>0 else pd.DataFrame()],
+                ignore_index=True
+            )
+            if PLOTLY:
                 fig = px.pie(donut_df, names="Category", values="spend_eur",
                              hole=.45, color_discrete_sequence=px.colors.qualitative.Set3)
                 fig.update_traces(textposition="inside", textinfo="percent+label")
@@ -436,10 +453,10 @@ if page == "Dashboard":
             else:
                 st.dataframe(donut_df, use_container_width=True)
 
-    with rcol:
+    with right:
         st.markdown('<div class="block-title">Top Suppliers by Spend</div>', unsafe_allow_html=True)
         top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20).copy()
-        if PLOTLY_AVAILABLE and not top_sup.empty:
+        if PLOTLY and not top_sup.empty:
             top_sup["Spend_M"] = top_sup["spend_eur"]/1_000_000.0
             fig2 = px.bar(
                 top_sup, x="Spend_M", y="Supplier", orientation="h",
@@ -452,33 +469,38 @@ if page == "Dashboard":
                 height=520,
                 margin=dict(l=10, r=140, t=0, b=10),
                 yaxis=dict(categoryorder="total ascending", automargin=True, ticksuffix="  "),
-                xaxis=dict(title="", showgrid=True, zeroline=False),
+                xaxis=dict(title="", showgrid=True, zeroline=False, gridcolor="#e5e7eb"),
                 plot_bgcolor="white", paper_bgcolor="white",
             )
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("No supplier spend to plot yet.")
 
-    st.markdown('<div class="mt-20"></div>', unsafe_allow_html=True)
-
-    # --------------------- Supplier × Category mix (Top-20 only) ----------------
+    # ---- Supplier × Category Mix (Top-20) — percent shares computed manually ----
+    st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.markdown('<div class="block-title">Supplier × Category Mix (Top 20 suppliers)</div>', unsafe_allow_html=True)
-    top20_suppliers = top_sup["Supplier"].tolist() if not sup_tot.empty else []
-    mix = (df[df["supplier"].isin(top20_suppliers)]
-           .groupby(["supplier","category_resolved"])["_spend_eur"].sum().reset_index())
 
-    if PLOTLY_AVAILABLE and not mix.empty:
-        # Preserve supplier order as in top_sup
+    top20_suppliers = (sup_tot.sort_values("spend_eur", ascending=False)
+                       .head(20)["Supplier"].tolist())
+    mix = (df[df["supplier"].isin(top20_suppliers)]
+           .groupby(["supplier","category_resolved"])["_spend_eur"].sum()
+           .reset_index())
+
+    if PLOTLY and not mix.empty:
+        # Compute % share per supplier (avoid barnorm)
+        totals = mix.groupby("supplier")["_spend_eur"].transform("sum")
+        mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
+        # Keep supplier order as in Top-20 ranking
         mix["supplier"] = pd.Categorical(mix["supplier"], categories=list(reversed(top20_suppliers)), ordered=True)
+
         fig3 = px.bar(
-            mix, x="_spend_eur", y="supplier", color="category_resolved",
-            orientation="h", barmode="stack", barnorm="percent",
-            color_discrete_sequence=px.colors.qualitative.Set3
+            mix, x="share_pct", y="supplier", color="category_resolved",
+            orientation="h", barmode="stack", color_discrete_sequence=px.colors.qualitative.Set3
         )
         fig3.update_layout(
-            height=max(500, len(top20_suppliers)*24 + 120),
+            height=max(520, len(top20_suppliers)*24 + 150),
             margin=dict(l=10, r=40, t=10, b=10),
-            legend=dict(orientation="h", y=1.13, x=0, title="Category"),
+            legend=dict(orientation="h", y=1.12, x=0, title="Category"),
             xaxis=dict(title="Share (%)", ticksuffix="%", showgrid=True, gridcolor="#f1f5f9"),
             yaxis=dict(title="Supplier", automargin=True),
             plot_bgcolor="white", paper_bgcolor="white",
@@ -487,19 +509,19 @@ if page == "Dashboard":
     else:
         st.info("Mix chart will appear once Top-20 suppliers exist.")
 
-    # ------------------------ DATA QUALITY (polished pills) --------------------
-    st.markdown('<div class="mt-24"></div>', unsafe_allow_html=True)
+    # ---- Data Quality ---------------------------------------------------------
+    st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
 
-    unknown_ccy       = df["currency_iso"].isna() | (df["currency_iso"]=="")
-    missing_price     = df["unit_price"].isna()
-    missing_qty       = df["quantity"].isna()
-    zero_neg_price    = (pd.to_numeric(df["unit_price"], errors="coerce")<=0)
-    zero_neg_qty      = (pd.to_numeric(df["quantity"], errors="coerce")<=0)
-    blank_supplier    = (df["supplier"].astype(str).str.strip()=="")
-    blank_category    = (df["category_resolved"].astype(str).str.strip()=="")
+    unknown_ccy    = df["currency_iso"].isna() | (df["currency_iso"]=="")
+    missing_price  = df["unit_price"].isna()
+    missing_qty    = df["quantity"].isna()
+    zero_neg_price = (pd.to_numeric(df["unit_price"], errors="coerce")<=0)
+    zero_neg_qty   = (pd.to_numeric(df["quantity"], errors="coerce")<=0)
+    blank_supplier = (df["supplier"].astype(str).str.strip()=="")
+    blank_category = (df["category_resolved"].astype(str).str.strip()=="")
 
-    dq_pairs = [
+    dq = [
         ("Unknown currency", int(unknown_ccy.sum())),
         ("Missing unit price", int(missing_price.sum())),
         ("Missing quantity", int(missing_qty.sum())),
@@ -509,19 +531,17 @@ if page == "Dashboard":
         ("Blank category", int(blank_category.sum())),
     ]
 
-    # Render pills in one flex row
     st.markdown('<div class="dq-row">', unsafe_allow_html=True)
-    for label, val in dq_pairs:
-        cls = "dq-ok" if val==0 else ("dq-warn" if val<10 else "dq-bad")
+    for label, val in dq:
+        cls = "ok" if val==0 else ("warn" if val<10 else "bad")
         st.markdown(f'''
-            <div class="dq-pill {cls}">
-              <div class="dq-lbl">{label}</div>
-              <div class="dq-val">{val}</div>
-            </div>
+          <div class="dq-pill {cls}">
+            <div class="dq-lbl">{label}</div>
+            <div class="dq-val">{val}</div>
+          </div>
         ''', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-    # Sample problematic rows (defensive column list)
     issues_mask = (unknown_ccy | missing_price | missing_qty |
                    zero_neg_price | zero_neg_qty | blank_supplier | blank_category)
     sample_cols = [c for c in ["supplier","category_resolved","currency","unit_price","quantity","_spend_eur"]
@@ -530,7 +550,8 @@ if page == "Dashboard":
     if not issues.empty:
         st.dataframe(issues.rename(columns={
             "supplier":"Supplier","category_resolved":"Category","currency":"Currency",
-            "unit_price":"Unit Price","quantity":"Quantity","_spend_eur":"Spend (EUR)"}), use_container_width=True)
+            "unit_price":"Unit Price","quantity":"Quantity","_spend_eur":"Spend (EUR)"
+        }), use_container_width=True)
     else:
         st.success("No obvious data quality issues found in key fields.")
 
@@ -550,7 +571,8 @@ else:
     cat = (df.groupby("category_resolved", dropna=False)
            .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
                 suppliers=("supplier", pd.Series.nunique))
-           .reset_index().rename(columns={"category_resolved":"Category","lines":"# PO Lines","# Suppliers":"# Suppliers"}))
+           .reset_index()
+           .rename(columns={"category_resolved":"Category","lines":"# PO Lines","# Suppliers":"# Suppliers"}))
     cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
 
     rngs = [savings_range(c) for c in cat["Category"]]
@@ -568,7 +590,7 @@ else:
         }
     )
 
-# ------------------------------ DOWNLOADS -------------------------------------
+# ============================== DOWNLOADS =====================================
 st.divider()
 st.markdown("#### Download full dataset & summaries (XLSX)")
 buf = io.BytesIO()
