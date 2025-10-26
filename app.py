@@ -1,3 +1,9 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ProcureIQ — Spend Explorer
+# Robust parsing, ECB FX, category resolution (Family/Group), dashboard revamp,
+# supplier bars widened, KPI re-order incl. Part Numbers, and Data Quality card.
+# ──────────────────────────────────────────────────────────────────────────────
+
 import io, re
 import numpy as np
 import pandas as pd
@@ -18,51 +24,45 @@ except Exception:
 
 from rapidfuzz import process, fuzz
 
-st.set_page_config(page_title="Procurement Diagnostics — Final", layout="wide")
-st.title("Procurement Diagnostics — Final (Auto FX → EUR)")
+st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
 
-st.caption(
-    "Upload your Excel spend cube. The app auto-detects key columns, parses tricky numbers, converts to EUR "
-    "with latest ECB FX, and renders interactive diagnostics in €k. Use the **sidebar** to map columns and "
-    "pick the **Category source** (Category / Item Family / Item Family Group / Family + Group)."
-)
-
-# --------------------------------------------------------------------------------
-# Styling
-# --------------------------------------------------------------------------------
+# ── Minimal chrome (brand header, no long instructions)
 st.markdown(
     """
     <style>
+      .app-title {font-size:32px; font-weight:800; letter-spacing:-.02rem; margin:0 0 6px 0;}
+      .app-sub   {color:#64748b; font-size:14px; margin:0 0 18px 0;}
       .kpi-card { background:#fff;border:1px solid #EEE;border-radius:14px;padding:16px 18px;
-                  box-shadow:0 1px 3px rgba(0,0,0,.04); }
+                  box-shadow:0 1px 3px rgba(0,0,0,.04); height:100%;}
       .kpi-title { font-size:.95rem;color:#6b7280;margin-bottom:6px;}
       .kpi-value { font-size:2rem;font-weight:700;letter-spacing:-.02rem; }
       .pill{display:inline-block;background:#f1f5f9;border:1px solid #e5e7eb;padding:6px 10px;border-radius:999px;margin-right:8px;}
-      .mt-16{margin-top:16px;} .mt-24{margin-top:24px;}
+      .tag-ok{background:#e7f5e6;color:#166534;border:1px solid #bbf7d0;padding:2px 8px;border-radius:999px;font-size:12px;}
+      .tag-warn{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;padding:2px 8px;border-radius:999px;font-size:12px;}
+      .tag-bad{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:2px 8px;border-radius:999px;font-size:12px;}
+      .mt-12{margin-top:12px;} .mt-16{margin-top:16px;} .mt-24{margin-top:24px;}
       [data-testid="stSidebar"]{min-width:360px;max-width:400px;}
     </style>
     """,
     unsafe_allow_html=True,
 )
+st.markdown('<div class="app-title">ProcureIQ — Spend Explorer</div>', unsafe_allow_html=True)
+st.markdown('<div class="app-sub">Upload your spend cube, map columns in the sidebar, pick the category source, and explore.</div>', unsafe_allow_html=True)
 
 BASE = "EUR"
 
-# --------------------------------------------------------------------------------
-# Helpers
-# --------------------------------------------------------------------------------
+# ── Helpers
 def normalize_headers(cols):
     return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 
 def parse_number_robust(x):
-    """Parse values like '1 234,56', '1,234', '1 234 pcs' -> float."""
     if pd.isna(x): return np.nan
     if isinstance(x, (int, float)): return float(x)
-    s = str(x)
-    s = re.sub(r"[^\d,\.\-]", "", s)
+    s = re.sub(r"[^\d,\.\-]", "", str(x))
     if "," in s and "." in s:
-        s = s.replace(",", "")              # "1,234.56" -> 1234.56
+        s = s.replace(",", "")
     elif "," in s and s.count(",")==1 and len(s.split(",")[-1]) in (2,3):
-        s = s.replace(",", ".")             # "123,45" -> 123.45  or "123,456" -> 123.456
+        s = s.replace(",", ".")
     else:
         s = s.replace(",", "")
     try: return float(s)
@@ -75,8 +75,7 @@ def ensure_numeric_spend(s: pd.Series) -> pd.Series:
     return s.fillna(0.0).astype(float)
 
 CURRENCY_SYMBOL_MAP = {"€":"EUR","$":"USD","£":"GBP","¥":"JPY","₩":"KRW","₹":"INR","₺":"TRY","R$":"BRL","S$":"SGD"}
-ISO_3 = {"EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD","CAD","MXN",
-         "BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS","NGN","VND","RUB"}
+ISO_3 = {"EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD","CAD","MXN","BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS","NGN","VND","RUB"}
 
 def detect_iso_from_text(text):
     if text is None or (isinstance(text,float) and np.isnan(text)): return None
@@ -115,16 +114,15 @@ def apply_fx_latest(df, fx):
     df["rate_to_eur"] = df["rate_to_eur"].fillna(1.0)
     return df
 
-# ---- Column detection
 TARGETS = {
-    "category": ["category","category name","spend category","commodity","material group","item family","item family group"],
+    "category":   ["category","category name","spend category","commodity","material group","item family","item family group"],
     "cat_family": ["item family","family","family name"],
-    "cat_group": ["item family group","family group","group","group name","material group"],
-    "supplier": ["supplier","supplier name","vendor","vendor name","seller","payee"],
-    "currency": ["currency","ccy","currency code","iso currency","transaction currency","base curr"],
+    "cat_group":  ["item family group","family group","group","group name","material group"],
+    "supplier":   ["supplier","supplier name","vendor","vendor name","seller","payee"],
+    "currency":   ["currency","ccy","currency code","iso currency","transaction currency","base curr"],
     "unit_price": ["unit price","unit cost","net price","unit po price","unit price (base curr)","unit price (global curr)"],
-    "quantity": ["quantity","qty","order qty","qty ordered","units","volume","po qty","po quantity","ordered qty"],
-    "amount": ["amount","purchase amount","line amount","total value","net value","extended price"]
+    "quantity":   ["quantity","qty","order qty","qty ordered","units","volume","po qty","po quantity","ordered qty"],
+    "amount":     ["amount","purchase amount","line amount","total value","net value","extended price"]
 }
 
 def suggest_columns(df):
@@ -141,9 +139,7 @@ def suggest_columns(df):
         if best: out[k] = back[best]
     return out
 
-# Spend detection
-SPEND_NAME_CUES = ["purchase amount","po amount","line total","total value","net value","extended price",
-                   "base curr","global curr","reporting curr"]
+SPEND_NAME_CUES = ["purchase amount","po amount","line total","total value","net value","extended price","base curr","global curr","reporting curr"]
 def detect_spend_column(df):
     hits = [c for c in df.columns if any(k in c.lower() for k in SPEND_NAME_CUES)]
     if not hits: return None
@@ -154,28 +150,35 @@ def detect_spend_column(df):
 def fmt_k(s: pd.Series) -> pd.Series:
     return (s/1_000.0).round(0)
 
-# --------------------------------------------------------------------------------
-# Upload
-# --------------------------------------------------------------------------------
+def detect_part_number_cols(df):
+    """Likely part number columns for KPI (item code, material, SKU...)."""
+    norm = {c: c.lower() for c in df.columns}
+    cues = ["item", "item number", "item no", "material", "material number", "sku", "code", "part", "pn", "material code"]
+    hits = []
+    for c, n in norm.items():
+        if any(k in n for k in cues):
+            hits.append(c)
+    # Put 'item number' and 'material' ahead
+    hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
+    return hits
+
+# ── Upload
 with st.sidebar:
     st.header("Data")
     uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
 
 if not uploaded:
-    st.info("Use the **sidebar** to upload an Excel file.")
+    st.info("Upload a file in the sidebar to start.")
     st.stop()
 
 raw = pd.read_excel(uploaded)
 raw.columns = [str(c) for c in raw.columns]
 
-# --------------------------------------------------------------------------------
-# Mapping + Category source resolution
-# --------------------------------------------------------------------------------
+# ── Mapping + Category source
 mapping = suggest_columns(raw)
 
 with st.sidebar:
     st.subheader("Column mapping")
-    # supplier / currency / unit price / quantity are essential
     if "supplier" not in mapping:
         mapping["supplier"] = st.selectbox("Supplier / Vendor", options=raw.columns, key="sup_pick")
     if "currency" not in mapping:
@@ -185,28 +188,19 @@ with st.sidebar:
     if "quantity" not in mapping:
         mapping["quantity"] = st.selectbox("Quantity", options=raw.columns, key="qty_pick")
 
-# Create working df with mapped columns
 df = raw.copy()
 for k in ["supplier","currency","unit_price","quantity","category","cat_family","cat_group"]:
     if k in mapping:
         df[k] = raw[mapping[k]]
 
 # Category candidates
-cat_cands = []
-label_to_col = {}
-
+cat_cands, label_to_col = [], {}
 def _add_cand(label, colname):
     if colname and colname in df.columns and df[colname].notna().any():
         cat_cands.append(label); label_to_col[label]=colname
-
-# 1) Native Category
 _add_cand("Category", mapping.get("category"))
-# 2) Item Family
 _add_cand("Item Family", mapping.get("cat_family"))
-# 3) Item Family Group
 _add_cand("Item Family Group", mapping.get("cat_group"))
-
-# 4) Family + Group (concatenate) if both exist
 if mapping.get("cat_family") in df.columns and mapping.get("cat_group") in df.columns:
     fam = df[mapping["cat_family"]].astype(str).str.strip().replace({"nan":""})
     grp = df[mapping["cat_group"]].astype(str).str.strip().replace({"nan":""})
@@ -215,34 +209,28 @@ if mapping.get("cat_family") in df.columns and mapping.get("cat_group") in df.co
         cat_cands.append("Family + Group")
         label_to_col["Family + Group"] = "__family_plus_group__"
 
-# If nothing found, fallback to ask for any column
 with st.sidebar:
     if not cat_cands:
-        st.warning("No category-like columns detected. Please choose one:")
+        st.warning("No category-like columns detected. Pick one:")
         user_cat = st.selectbox("Pick a Category column", options=raw.columns, key="cat_any")
         label_to_col["Category"] = user_cat
         cat_cands = ["Category"]
 
 with st.sidebar:
     st.subheader("Category source")
-    cat_choice = st.radio("Use this as *Category*:", cat_cands, index=0, horizontal=False)
+    cat_choice = st.radio("Use this as Category:", cat_cands, index=0)
 resolved_cat_col = label_to_col[cat_choice]
 df["category_resolved"] = df[resolved_cat_col].copy()
 
-# --------------------------------------------------------------------------------
-# Parsing + FX + Spend
-# --------------------------------------------------------------------------------
-# Parse numerics robustly
+# ── Parsing + FX + Spend
 df["unit_price"] = df["unit_price"].apply(parse_number_robust)
 df["quantity"]   = df["quantity"].apply(parse_number_robust)
 
-# FX
 fx = load_latest_ecb()
 df["currency"] = df["currency"].fillna("")
 df = apply_fx_latest(df, fx)
 df["unit_price_eur"] = pd.to_numeric(df["unit_price"], errors="coerce") * df["rate_to_eur"]
 
-# Detected spend?
 spend_col = detect_spend_column(raw)
 with st.sidebar:
     if spend_col:
@@ -252,13 +240,11 @@ with st.sidebar:
 
 def _is_global_header(c): 
     return any(k in c.lower() for k in ["base curr","base currency","global curr","reporting curr"])
-
 def _find_base_ccy_col(df_raw, spend_col_name):
     cands=[c for c in df_raw.columns if c!=spend_col_name and any(k in c.lower() for k in
         ["base curr code","base currency code","base curr","base currency","reporting curr","global curr"])]
     return cands[0] if cands else None
 
-# Prepare both sources
 spend_detected = pd.Series(np.nan, index=df.index)
 if spend_col:
     s = raw[spend_col].apply(parse_number_robust)
@@ -314,9 +300,7 @@ with st.sidebar:
         f"Unit×Qty×FX total: € {np.nansum(spend_calc):,.0f}"
     )
 
-# --------------------------------------------------------------------------------
-# Aggregates by **resolved** category & supplier
-# --------------------------------------------------------------------------------
+# ── Aggregates
 cat = (df.groupby("category_resolved", dropna=False)
        .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
             suppliers=("supplier", pd.Series.nunique))
@@ -335,59 +319,65 @@ sup_cat = (df.groupby(["supplier","category_resolved"], dropna=False)["_spend_eu
              .sum().reset_index()
              .rename(columns={"supplier":"Supplier","category_resolved":"Category","_spend_eur":"Spend_EUR"}))
 
-# --------------------------------------------------------------------------------
-# Navigation
-# --------------------------------------------------------------------------------
+# ── Navigation
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
-# --------------------------------------------------------------------------------
+# ── KPI helpers
+part_cols = detect_part_number_cols(raw)
+part_count = int(pd.Series(dtype=object).nunique())
+if part_cols:
+    # pick first non-empty col
+    chosen = None
+    for c in part_cols:
+        if raw[c].notna().sum() > 0:
+            chosen = c; break
+    if chosen:
+        part_count = int(raw[chosen].astype(str).replace({"nan":np.nan}).nunique())
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Dashboard
-# --------------------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════════════
 if page == "Dashboard":
-    st.subheader("Dashboard")
     total_spend = float(df["_spend_eur"].sum())
     total_lines = int(len(df))
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    c1,c2,c3,c4 = st.columns(4)
-    with c1: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Total Spend</div><div class="kpi-value">€ {total_spend/1_000_000:,.1f} M</div></div>', unsafe_allow_html=True)
-    with c2: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Suppliers</div><div class="kpi-value">{total_suppliers:,}</div></div>', unsafe_allow_html=True)
-    with c3: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Categories</div><div class="kpi-value">{total_categories:,}</div></div>', unsafe_allow_html=True)
-    with c4: st.markdown(f'<div class="kpi-card"><div class="kpi-title">PO Lines</div><div class="kpi-value">{total_lines:,}</div></div>', unsafe_allow_html=True)
+    k1,k2,k3,k4,k5 = st.columns([1,1,1,1,1])
+    with k1: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Total Spend</div><div class="kpi-value">€ {total_spend/1_000_000:,.1f} M</div></div>', unsafe_allow_html=True)
+    with k2: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Categories</div><div class="kpi-value">{total_categories:,}</div></div>', unsafe_allow_html=True)
+    with k3: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Suppliers</div><div class="kpi-value">{total_suppliers:,}</div></div>', unsafe_allow_html=True)
+    with k4: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Part Numbers</div><div class="kpi-value">{part_count:,}</div></div>', unsafe_allow_html=True)
+    with k5: st.markdown(f'<div class="kpi-card"><div class="kpi-title">PO Lines</div><div class="kpi-value">{total_lines:,}</div></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="mt-16"></div>', unsafe_allow_html=True)
-    col_left, col_right = st.columns([1.1, 1.4])
 
-    # ---------- Donut: Spend by resolved category ----------
+    # Wider layout: donut (left) vs wide bars (right)
+    col_left, col_right = st.columns([1.0, 1.9])
+
     with col_left:
-        st.markdown("**Spend by Category**")
+        st.slider("Top categories in donut", 5, min(15, len(cat)), min(10, len(cat)), key="donutN")
         donut_raw = (df.groupby("category_resolved", dropna=False)["_spend_eur"].sum()
                        .reset_index().rename(columns={"category_resolved":"Category","_spend_eur":"spend_eur"}))
         donut_raw = donut_raw[donut_raw["spend_eur"]>0].sort_values("spend_eur", ascending=False)
 
         if donut_raw.empty or donut_raw["spend_eur"].nunique(dropna=True) <= 1:
-            st.error(
-                "Category spend looks degenerate (all equal/zero). This happens when no valid category source was chosen. "
-                "Use the **Category source** in the sidebar (e.g., *Family + Group*)."
-            )
+            st.error("Category spend looks degenerate. Check **Category source** in the sidebar.")
             st.dataframe(donut_raw.rename(columns={"spend_eur":"Spend (EUR)"}), use_container_width=True)
         else:
-            topN = st.slider("Top categories in donut", 5, min(15, len(donut_raw)), min(10, len(donut_raw)), key="donutN")
-            topN_df = donut_raw.head(topN)
-            other = float(donut_raw["spend_eur"].iloc[topN:].sum())
+            topN_df = donut_raw.head(st.session_state.donutN)
+            other = float(donut_raw["spend_eur"].iloc[st.session_state.donutN:].sum())
             donut_df = pd.concat([topN_df, pd.DataFrame([{"Category":"Other","spend_eur":other}]) if other>0 else pd.DataFrame()], ignore_index=True)
             if PLOTLY_AVAILABLE:
                 fig = px.pie(donut_df, names="Category", values="spend_eur",
                              hole=.45, color_discrete_sequence=px.colors.qualitative.Set3)
                 fig.update_traces(textposition="inside", textinfo="percent+label")
-                fig.update_layout(height=520, margin=dict(l=10,r=10,t=10,b=120),
-                                  legend=dict(orientation="h", y=-0.15))
+                fig.update_layout(height=540, margin=dict(l=10,r=10,t=10,b=120),
+                                  legend=dict(orientation="h", y=-0.12))
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.dataframe(donut_df, use_container_width=True)
 
-    # ---------- Bars: Top suppliers by spend ----------
     with col_right:
         st.markdown("**Top Suppliers by Spend**")
         top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20).copy()
@@ -399,10 +389,11 @@ if page == "Dashboard":
                 labels={"Spend_M":"Spend (€ M)"},
                 color_discrete_sequence=["#14b8a6"],
             )
+            # Wider plot area, generous margins for labels
             fig2.update_traces(textposition="outside", cliponaxis=False)
             fig2.update_layout(
-                height=520,
-                margin=dict(l=10, r=220, t=10, b=10),
+                height=540,
+                margin=dict(l=10, r=80, t=10, b=10),
                 yaxis=dict(categoryorder="total ascending", automargin=True, ticksuffix="  "),
                 xaxis=dict(title="", showgrid=True, zeroline=False),
             )
@@ -410,9 +401,51 @@ if page == "Dashboard":
         else:
             st.info("No supplier spend to plot yet.")
 
-# --------------------------------------------------------------------------------
-# Deep Dives (unchanged logic except they use 'category_resolved')
-# --------------------------------------------------------------------------------
+    # ── Data Quality card
+    st.markdown('<div class="mt-24"></div>', unsafe_allow_html=True)
+    st.subheader("Data Quality")
+    dq = []
+
+    # Checks
+    unknown_ccy = df["currency_iso"].isna() | (df["currency_iso"]=="")
+    dq.append(("Unknown currency", int(unknown_ccy.sum())))
+    price_missing = df["unit_price"].isna().sum()
+    dq.append(("Missing unit price", int(price_missing)))
+    qty_missing = df["quantity"].isna().sum()
+    dq.append(("Missing quantity", int(qty_missing)))
+    zero_or_neg_price = (pd.to_numeric(df["unit_price"], errors="coerce")<=0).sum()
+    dq.append(("Zero/negative price", int(zero_or_neg_price)))
+    zero_or_neg_qty = (pd.to_numeric(df["quantity"], errors="coerce")<=0).sum()
+    dq.append(("Zero/negative qty", int(zero_or_neg_qty)))
+    supplier_blank = (df["supplier"].astype(str).str.strip()=="").sum()
+    dq.append(("Blank supplier", int(supplier_blank)))
+    cat_blank = (df["category_resolved"].astype(str).str.strip()=="").sum()
+    dq.append(("Blank category", int(cat_blank)))
+
+    # Summary tags
+    c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
+    cards = [c1,c2,c3,c4,c5,c6,c7]
+    for (label, val), col in zip(dq, cards):
+        tag = "tag-ok" if val==0 else ("tag-warn" if val<10 else "tag-bad")
+        col.markdown(f'<div class="{tag}">{label}: {val}</div>', unsafe_allow_html=True)
+
+    # Sample problem rows
+    issues_mask = (unknown_ccy | (df["unit_price"].isna()) | (df["quantity"].isna()) |
+                   (pd.to_numeric(df["unit_price"], errors="coerce")<=0) |
+                   (pd.to_numeric(df["quantity"], errors="coerce")<=0) |
+                   (df["supplier"].astype(str).str.strip()=="") |
+                   (df["category_resolved"].astype(str).str.strip()==""))
+    issues = df.loc[issues_mask, ["supplier","category_resolved","currency","unit_price","quantity","_spend_eur"]].head(200)
+    if not issues.empty:
+        st.dataframe(issues.rename(columns={
+            "supplier":"Supplier","category_resolved":"Category","currency":"Currency",
+            "unit_price":"Unit Price","quantity":"Quantity","_spend_eur":"Spend (EUR)"}), use_container_width=True)
+    else:
+        st.success("No obvious data quality issues found in key fields.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Deep Dives (unchanged besides using category_resolved everywhere)
+# ══════════════════════════════════════════════════════════════════════════════
 else:
     st.subheader("Deep Dives")
 
@@ -425,7 +458,6 @@ else:
         if "log"   in s: return (0.08,0.15)
         return (0.05,0.10)
 
-    # Category overview
     rngs = [savings_range(c) for c in cat["Category"]]
     cat["Savings Range (%)"] = [f"{int(a*100)}–{int(b*100)}" for a,b in rngs]
     cat["Potential Min (€ k)"] = (cat["spend_eur"] * [a for a,b in rngs] / 1_000).round(0)
@@ -440,9 +472,7 @@ else:
         }
     )
 
-# --------------------------------------------------------------------------------
-# Download pack
-# --------------------------------------------------------------------------------
+# ── Downloads unchanged
 st.divider()
 st.markdown("#### Download full dataset & summaries (XLSX)")
 buf = io.BytesIO()
