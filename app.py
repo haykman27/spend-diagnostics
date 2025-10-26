@@ -6,7 +6,7 @@ import io, re
 import numpy as np
 import pandas as pd
 import streamlit as st
-import requests  # ← needed for SEC/EDGAR fetch
+import requests  # ← for Wikipedia lookups
 
 # Charts
 try:
@@ -42,7 +42,6 @@ st.markdown(
       .app-title {{ font-size: 32px; font-weight: 800; letter-spacing: -.02rem; margin: 0; color: {P_TEXT}; }}
       .app-sub   {{ color: {P_TEXT2}; font-size: 14px; margin: 6px 0 0 0; }}
 
-      /* KPI row (single horizontal row, equal sizes) */
       .kpi-grid {{ display:grid; grid-template-columns: repeat(5, 1fr); gap:14px; margin:12px 0 0 0; }}
       .kpi-card {{
         background:#fff;border:1px solid {P_BORDER};border-radius:14px;padding:16px 18px;
@@ -57,7 +56,6 @@ st.markdown(
       .spacer-16 {{ margin-top:16px; }}
       .spacer-24 {{ margin-top:24px; }}
 
-      /* Data Quality pills (unchanged) */
       .dq-row {{ display:flex; flex-wrap:wrap; gap:10px; margin:6px 0 12px 0; }}
       .dq-pill {{
         display:flex; align-items:center; gap:10px;
@@ -126,7 +124,7 @@ def detect_iso_from_text(text):
 
 @st.cache_data(ttl=6*60*60, show_spinner=False)
 def load_latest_ecb():
-    url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv"  # ← quoted
+    url = https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv
     fx_wide = pd.read_csv(url)
     fx_wide.rename(columns={"Date":"date"}, inplace=True)
     fx_wide["date"] = pd.to_datetime(fx_wide["date"], errors="coerce")
@@ -189,6 +187,81 @@ def detect_part_number_cols(df):
             hits.append(c)
     hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
     return hits
+
+# ========= helpers for Deep Dives (public web data → best-effort Wikipedia) ===
+def _parse_amount_to_millions_eur(text: str) -> float | None:
+    """
+    Try to parse strings like 'US$ 2.1 billion', '€3.4bn', '$500 million', '£120m' to a number in EUR millions.
+    Assumes 1:1 for major currencies if symbol found (to avoid introducing noisy FX). Best-effort.
+    """
+    if not text or not isinstance(text, str): return None
+    t = text.replace(",", "").lower()
+    # unit
+    unit = 1.0
+    if "billion" in t or "bn" in t: unit = 1_000.0
+    elif "million" in t or "mn" in t or "m" in t: unit = 1.0
+    # number
+    m = re.search(r"([0-9]+(\.[0-9]+)?)", t)
+    if not m: return None
+    val = float(m.group(1)) * unit
+    return val  # treat as EUR millions best-effort
+
+@st.cache_data(ttl=24*60*60, show_spinner=False)
+def fetch_financials_wikipedia(supplier_name: str):
+    """
+    Best-effort: search Wikipedia, try to parse infobox for Revenue and Operating margin.
+    Returns: dict(revenue_m_eur, margin_pct, page_url, summary)
+    """
+    try:
+        r = requests.get(
+            https://en.wikipedia.org/w/api.php,
+            params={"action": "opensearch", "search": supplier_name, "limit": 1, "namespace": 0, "format": "json"},
+            timeout=10,
+        )
+        data = r.json()
+        if not data or not data[1]:
+            return {"revenue_m_eur": None, "margin_pct": None, "page_url": None, "summary": None}
+        title = data[1][0]
+        page_url = fhttps://en.wikipedia.org/wiki/{title.replace(' ','_')}
+        html = requests.get(page_url + "?printable=yes", timeout=10).text
+        tables = []
+        try:
+            tables = pd.read_html(html)
+        except Exception:
+            tables = []
+        rev, margin = None, None
+        for t in tables:
+            if t.shape[1] < 2: 
+                continue
+            left = t.iloc[:, 0].astype(str).str.lower()
+            if any(k in left.values for k in ["revenue", "operating income", "operating margin", "net income"]):
+                # revenue
+                if "revenue" in left.values:
+                    v = str(t[left == "revenue"].iloc[0, 1])
+                    rev = _parse_amount_to_millions_eur(v)
+                # margin: prefer operating margin if explicitly present
+                if "operating margin" in left.values:
+                    v = str(t[left == "operating margin"].iloc[0, 1])
+                    m = re.search(r"([0-9]+(\.[0-9]+)?)\s*%", v)
+                    if m: margin = float(m.group(1))
+                elif "operating income" in left.values and rev:
+                    # If only operating income present, we cannot safely compute margin without revenue unit alignment → skip.
+                    pass
+        # summary
+        summary = None
+        try:
+            rs = requests.get(
+                https://en.wikipedia.org/api/rest_v1/page/summary/ + title.replace(" ", "_"),
+                timeout=10,
+                headers={"accept": "application/json"},
+            )
+            js = rs.json()
+            summary = js.get("extract")
+        except Exception:
+            summary = None
+        return {"revenue_m_eur": rev, "margin_pct": margin, "page_url": page_url, "summary": summary}
+    except Exception:
+        return {"revenue_m_eur": None, "margin_pct": None, "page_url": None, "summary": None}
 
 # ============================== UPLOAD (unchanged) ============================
 with st.sidebar:
@@ -263,7 +336,7 @@ with st.sidebar:
     if spend_col: st.success(f"Detected **'{spend_col}'** as spend column.")
     else: st.warning("No clear spend column found; you can use Unit×Qty×FX instead.")
 
-def _is_global_header(c):
+def _is_global_header(c): 
     return any(k in c.lower() for k in ["base curr","base currency","global curr","reporting curr"])
 def _find_base_ccy_col(df_raw, spend_col_name):
     cands=[c for c in df_raw.columns if c!=spend_col_name and any(k in c.lower() for k in
@@ -348,64 +421,67 @@ def detect_part_number_cols(df_in):
     return hits
 part_cols = detect_part_number_cols(raw)
 part_count = 0
+chosen_part_col = None
 if part_cols:
     chosen = None
     for c in part_cols:
         if raw[c].notna().sum() > 0:
             chosen = c; break
     if chosen:
+        chosen_part_col = chosen           # ← remember for deep dives
         part_count = int(raw[chosen].astype(str).replace({"nan":np.nan,"":np.nan}).nunique())
 
 # ============================== NAV (unchanged) ===============================
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
-# ============================== DASHBOARD (unchanged) =========================
+# ============================== DASHBOARD (UNCHANGED except KPI layout) =======
 if page == "Dashboard":
     total_spend = float(df["_spend_eur"].sum())
     total_lines = int(len(df))
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    # KPI row — unchanged horizontal layout
-    st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Total Spend</div>
-          <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Categories</div>
-          <div class="kpi-value">{total_categories:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Suppliers</div>
-          <div class="kpi-value">{total_suppliers:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Part Numbers</div>
-          <div class="kpi-value">{part_count:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">PO Lines</div>
-          <div class="kpi-value">{total_lines:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    c1, c2, c3, c4, c5 = st.columns(5, gap="small")
+    with c1:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">Total Spend</div>
+              <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
+            </div>
+        ''', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">Categories</div>
+              <div class="kpi-value">{total_categories:,}</div>
+            </div>
+        ''', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">Suppliers</div>
+              <div class="kpi-value">{total_suppliers:,}</div>
+            </div>
+        ''', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">Part Numbers</div>
+              <div class="kpi-value">{part_count:,}</div>
+            </div>
+        ''', unsafe_allow_html=True)
+    with c5:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">PO Lines</div>
+              <div class="kpi-value">{total_lines:,}</div>
+            </div>
+        ''', unsafe_allow_html=True)
 
     st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
 
-    # Donut left, bar right
     left, right = st.columns([1.05, 2.2], gap="large")
 
-    # -------- Donut
     with left:
         st.markdown('<div class="block-title">Spend by Category</div>', unsafe_allow_html=True)
         donut_raw = (df.groupby("category_resolved", dropna=False)["_spend_eur"].sum()
@@ -424,7 +500,6 @@ if page == "Dashboard":
             other = float(donut_raw["spend_eur"].iloc[st.session_state.donutN:].sum())
             donut_df = pd.concat([topN_df, pd.DataFrame([{"Category":"Other","spend_eur":other}]) if other>0 else pd.DataFrame()], ignore_index=True)
 
-            # color map used ALSO by Supplier×Category Mix
             if PLOTLY:
                 palette = px.colors.qualitative.Set3
                 cats_in_palette = donut_df["Category"].tolist()
@@ -438,7 +513,6 @@ if page == "Dashboard":
             else:
                 st.dataframe(donut_df, use_container_width=True)
 
-    # -------- Top suppliers bar
     with right:
         st.markdown('<div class="block-title">Top Suppliers by Spend</div>', unsafe_allow_html=True)
         top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20).copy()
@@ -462,7 +536,6 @@ if page == "Dashboard":
         else:
             st.info("No supplier spend to plot yet.")
 
-    # ---------------- Supplier × Category Mix (Top 20) ------------------------
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.markdown('<div class="block-title">Supplier × Category Mix (Top 20 suppliers)</div>', unsafe_allow_html=True)
 
@@ -488,12 +561,10 @@ if page == "Dashboard":
         totals = mix.groupby("Supplier")["_spend_eur"].transform("sum")
         mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
         mix["Supplier"] = pd.Categorical(mix["Supplier"], categories=top20_order_for_mix, ordered=True)
-
         if not 'color_map' in locals() or not color_map:
             palette = px.colors.qualitative.Set3
             all_cats = sorted(df["category_resolved"].dropna().unique().tolist())
             color_map = {c: palette[i % len(palette)] for i, c in enumerate(all_cats)}
-
         fig3 = px.bar(
             mix, x="share_pct", y="Supplier", color="category_resolved",
             orientation="h", barmode="stack", color_discrete_map=color_map
@@ -555,39 +626,134 @@ if page == "Dashboard":
     else:
         st.success("No obvious data quality issues found in key fields.")
 
-# ============================== DEEP DIVES (unchanged) ========================
+# ============================== DEEP DIVES (REPLACED) =========================
 else:
     st.subheader("Deep Dives")
 
-    def savings_range(cat_val):
-        s = "" if pd.isna(cat_val) else str(cat_val).lower()
-        if "stamp" in s: return (0.10,0.15)
-        if "tube"  in s: return (0.08,0.14)
-        if "plast" in s: return (0.08,0.18)
-        if "steel" in s: return (0.05,0.12)
-        if "log"   in s: return (0.08,0.15)
-        return (0.05,0.10)
+    # 1) Category selector
+    categories = sorted(df["category_resolved"].dropna().unique().tolist())
+    if not categories:
+        st.info("No categories found in the dataset.")
+        st.stop()
 
-    cat2 = (df.groupby("category_resolved", dropna=False)
-           .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
-                suppliers=("supplier", pd.Series.nunique))
-           .reset_index()
-           .rename(columns={"category_resolved":"Category","lines":"# PO Lines"}))
-    cat2["Spend (€ k)"] = fmt_k(cat2["spend_eur"])
+    sel_cat = st.selectbox("Pick a category", categories, index=0)
 
-    rngs = [savings_range(c) for c in cat2["Category"]]
-    cat2["Savings Range (%)"] = [f"{int(a*100)}–{int(b*100)}" for a,b in rngs]
-    cat2["Potential Min (€ k)"] = (cat2["spend_eur"] * [a for a,b in rngs] / 1_000).round(0)
-    cat2["Potential Max (€ k)"] = (cat2["spend_eur"] * [b for a,b in rngs] / 1_000).round(0)
+    df_cat = df[df["category_resolved"] == sel_cat].copy()
+    if df_cat.empty:
+        st.info("No lines for this category.")
+        st.stop()
 
+    # 2) Suppliers within the category, sorted by spend
+    sup_cat = (
+        df_cat.groupby("supplier", dropna=False)
+        .agg(spend_eur=("_spend_eur", "sum"),
+             pn_count=(chosen_part_col, pd.Series.nunique) if chosen_part_col in df_cat.columns else ("supplier","count"))
+        .reset_index()
+        .rename(columns={"supplier":"Supplier","pn_count":"Part Numbers"})
+        .sort_values("spend_eur", ascending=False)
+    )
+    sup_cat["Spend_M"] = sup_cat["spend_eur"]/1_000_000.0
+
+    # Bar + metrics (similar to Top-20)
+    st.markdown(f'**Suppliers in “{sel_cat}” (sorted by spend)**')
+    if PLOTLY:
+        fig = px.bar(
+            sup_cat, x="Spend_M", y="Supplier", orientation="h",
+            text=sup_cat["Spend_M"].map(lambda v: f"€ {v:,.1f} M"),
+            labels={"Spend_M":"Spend (€ M)"},
+            color_discrete_sequence=[P_PRIMARY],
+        )
+        fig.update_traces(textposition="outside", cliponaxis=False)
+        fig.update_layout(
+            height=max(440, 24*len(sup_cat)+120),
+            margin=dict(l=10, r=160, t=0, b=10),
+            yaxis=dict(categoryorder="total ascending", automargin=True, ticksuffix="  "),
+            xaxis=dict(title="", showgrid=True, gridcolor="#e5e7eb"),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    st.caption("Tip: Hover bars for values. “Part Numbers” shown below.")
+
+    # Show PN counts table next to the chart for clarity
     st.dataframe(
-        cat2[["Category","Spend (€ k)","Savings Range (%)","Potential Min (€ k)","Potential Max (€ k)","# PO Lines"]],
+        sup_cat[["Supplier","Part Numbers","Spend_M"]]
+            .rename(columns={"Spend_M":"Spend (€ M)"}),
         use_container_width=True,
-        column_config={
-            "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-            "Potential Min (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-            "Potential Max (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-        }
+        hide_index=True
+    )
+
+    st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
+
+    # 3) Revenue & Margin bubbles (best-effort Wikipedia)
+    st.markdown("**Supplier financials (public sources; where available)**")
+    fin_rows = []
+    for s in sup_cat["Supplier"]:
+        fin = fetch_financials_wikipedia(str(s))
+        fin_rows.append({
+            "Supplier": s,
+            "Revenue (€ M)": fin["revenue_m_eur"],
+            "Margin (%)": fin["margin_pct"],
+            "Spend (€ M)": float(sup_cat.loc[sup_cat["Supplier"]==s,"Spend_M"].values[0]),
+            "Source": fin["page_url"]
+        })
+    fin_df = pd.DataFrame(fin_rows)
+    fin_plot = fin_df.dropna(subset=["Revenue (€ M)", "Margin (%)"])
+    if PLOTLY and not fin_plot.empty:
+        bubble = px.scatter(
+            fin_plot, x="Revenue (€ M)", y="Margin (%)",
+            size="Spend (€ M)", hover_name="Supplier",
+            color_discrete_sequence=[P_ACCENT]
+        )
+        bubble.update_layout(
+            height=460, margin=dict(l=10,r=10,t=10,b=10),
+            xaxis=dict(showgrid=True, gridcolor="#e5e7eb"),
+            yaxis=dict(showgrid=True, gridcolor="#e5e7eb"),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+        st.plotly_chart(bubble, use_container_width=True)
+    else:
+        st.info("No reliable public revenue/margin found for the suppliers in this category yet.")
+
+    # 4) Drill-in: pick a supplier → profile
+    st.markdown("### Supplier overview")
+    pick = st.selectbox("Select a supplier for details", sup_cat["Supplier"].tolist(), index=0)
+    fin = fetch_financials_wikipedia(str(pick))
+
+    colA, colB = st.columns([2,1], gap="large")
+    with colA:
+        st.write(f"**Summary (Wikipedia)**")
+        if fin["summary"]:
+            st.write(fin["summary"])
+        else:
+            st.write("_No public summary found._")
+        if fin["page_url"]:
+            st.markdown(f"[Wikipedia source]({fin['page_url']})")
+
+    with colB:
+        st.metric("Revenue (EUR million)", f"{fin['revenue_m_eur']:,.0f}" if fin["revenue_m_eur"] else "N/A")
+        st.metric("Margin (%)", f"{fin['margin_pct']:.1f}%" if fin["margin_pct"] is not None else "N/A")
+        # coarse stability signal based on available info (not invented numbers)
+        stability = "Insufficient data"
+        if fin["revenue_m_eur"] and fin["margin_pct"] is not None:
+            if fin["revenue_m_eur"] > 500 and fin["margin_pct"] >= 5:
+                stability = "Likely stable (sizeable revenue & decent margin)"
+            elif fin["revenue_m_eur"] > 100 and fin["margin_pct"] >= 2:
+                stability = "Moderate (medium size, thin margins)"
+            else:
+                stability = "Potentially fragile (small/low margin)"
+        st.write(f"**Stability signal:** {stability}")
+
+    st.markdown("#### Negotiation & cost-reduction levers (generic, evidence-based)")
+    st.markdown(
+        """
+        - **Volume leverage / aggregation** across plants and regions (check cross-category synergies).
+        - **Should-cost & clean-sheet** models to challenge material, conversion and overhead build-ups.
+        - **VA/VE** (value-analysis / value-engineering) to simplify specs, tolerances, or packaging.
+        - **Dual sourcing / competitive benchmark** where feasible to reduce single-source risk.
+        - **Re-design to cost** (e.g., material grade, alternate manufacturing process).
+        - **Payment term and INCOTERM optimization** to improve TCO without touching piece price.
+        - **Indexation / formula pricing** for volatile commodities to reduce risk premiums.
+        """
     )
 
 # ============================== DOWNLOADS (unchanged) =========================
@@ -605,141 +771,3 @@ st.download_button(
     "Download results.xlsx", buf.getvalue(), "procurement_diagnostics_results.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
-
-# ──────────────────────────────────────────────────────────────────────────────
-# EDGAR helper functions (UPDATED; everything else above unchanged)
-# ──────────────────────────────────────────────────────────────────────────────
-
-@st.cache_data(ttl=24*60*60, show_spinner=False)
-def _sec_ticker_table():
-    """SEC master table of tickers (CIK ↔ ticker ↔ name)."""
-    try:
-        url = "https://www.sec.gov/files/company_tickers.json"
-        r = requests.get(url, headers={"User-Agent":"ProcureIQ/1.0"}, timeout=20)
-        r.raise_for_status()
-        data = r.json()
-        rows = []
-        for _, v in data.items():
-            rows.append({
-                "cik": str(v["cik_str"]).zfill(10),
-                "ticker": str(v["ticker"]).upper().strip(),
-                "name": v["title"]
-            })
-        return pd.DataFrame(rows)
-    except Exception:
-        return pd.DataFrame(columns=["cik","ticker","name"])
-
-def _clean_name(n: str) -> str:
-    n = re.sub(r"[,\.]", " ", str(n))
-    n = re.sub(r"\b(incorporated|inc|ltd|limited|corp|corporation|plc|sa|ag|nv|co|company)\b", "", n, flags=re.I)
-    n = re.sub(r"\s+", " ", n).strip()
-    return n
-
-def _closest_sec_match(name: str, sec_df: pd.DataFrame, min_score=80):
-    """Return dict {'cik','ticker','name'} for best match or None."""
-    if sec_df is None or sec_df.empty or not isinstance(name, str):
-        return None
-    q = _clean_name(name)
-    cand_name = process.extractOne(q, (_clean_name(x) for x in sec_df["name"].tolist()), scorer=fuzz.WRatio)
-    best = None
-    if cand_name and cand_name[1] >= min_score:
-        row = sec_df.loc[sec_df["name"].apply(_clean_name) == cand_name[0]].head(1)
-        if len(row):
-            r = row.iloc[0]
-            best = {"cik": str(r["cik"]).zfill(10), "ticker": r["ticker"], "name": r["name"]}
-    cand_tic = process.extractOne(q, sec_df["ticker"].tolist(), scorer=fuzz.WRatio)
-    if (best is None) and cand_tic and cand_tic[1] >= min_score:
-        row = sec_df.loc[sec_df["ticker"] == cand_tic[0]].head(1)
-        if len(row):
-            r = row.iloc[0]
-            best = {"cik": str(r["cik"]).zfill(10), "ticker": r["ticker"], "name": r["name"]}
-    return best
-
-@st.cache_data(ttl=24*60*60, show_spinner=False)
-def fetch_fin_sec_edgar(company_name: str):
-    """
-    Best-effort US public company lookup via SEC EDGAR.
-    Searches multiple revenue & net-income concepts and returns the most recent.
-    Returns:
-      {'revenue_m_eur': float|None, 'margin_pct': float|None, 'source_url': str|None}
-    """
-    try:
-        sec = _sec_ticker_table()
-    except Exception:
-        return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
-
-    match = _closest_sec_match(company_name, sec)
-    if match is None:
-        return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
-
-    cik = match["cik"]
-    url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-    headers = {"User-Agent": "ProcureIQ/1.0 (contact: procurement@example.com)"}
-
-    try:
-        r = requests.get(url, headers=headers, timeout=25)
-        r.raise_for_status()
-        data = r.json()
-    except Exception:
-        return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
-
-    def _latest_for_any(taxonomy: str, concepts: list, preferred_unit="USD"):
-        for concept in concepts:
-            try:
-                units = data["facts"][taxonomy][concept]["units"]
-            except Exception:
-                continue
-            series = None
-            if preferred_unit and preferred_unit in units:
-                series = units[preferred_unit]
-            elif len(units):
-                series = next(iter(units.values()))
-            if not series:
-                continue
-            series = sorted(series, key=lambda x: (x.get("end",""), x.get("fy",""), x.get("period","")))
-            if series:
-                val = series[-1].get("val", None)
-                try:
-                    return float(val)
-                except Exception:
-                    continue
-        return None
-
-    revenue_candidates = [
-        "RevenueFromContractWithCustomerExcludingAssessedTax",
-        "SalesRevenueNet",
-        "Revenues",
-        "RevenueFromContractWithCustomerIncludingAssessedTax",
-        "Revenue",
-        "TotalRevenuesAndOtherIncome",
-    ]
-    income_candidates = [
-        "NetIncomeLoss",
-        "ProfitLoss",
-        "NetIncomeLossAvailableToCommonStockholdersBasic",
-        "NetIncomeLossIncludingPortionAttributableToNoncontrollingInterest",
-    ]
-
-    rev_usd = _latest_for_any("us-gaap", revenue_candidates, preferred_unit="USD")
-    ni_usd  = _latest_for_any("us-gaap", income_candidates,  preferred_unit="USD")
-    if rev_usd is None:
-        rev_any = _latest_for_any("us-gaap", revenue_candidates, preferred_unit=None)
-        rev_usd = rev_any
-    if ni_usd is None:
-        ni_any = _latest_for_any("us-gaap", income_candidates, preferred_unit=None)
-        ni_usd = ni_any
-
-    revenue_m_eur, margin_pct = None, None
-    if rev_usd is not None:
-        try:
-            revenue_m_eur = (rev_usd * 0.93) / 1_000_000.0   # simple EUR/USD conv
-        except Exception:
-            revenue_m_eur = None
-
-    if (rev_usd is not None) and (ni_usd is not None) and rev_usd != 0:
-        try:
-            margin_pct = 100.0 * (ni_usd / rev_usd)
-        except Exception:
-            margin_pct = None
-
-    return {"revenue_m_eur": revenue_m_eur, "margin_pct": margin_pct, "source_url": url}
