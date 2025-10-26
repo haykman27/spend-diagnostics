@@ -365,51 +365,41 @@ if page == "Dashboard":
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    # ---- KPI row (horizontal banners, same size) ----
-# Use Streamlit columns instead of CSS grid so they always stay side-by-side
-col1, col2, col3, col4, col5 = st.columns(5, gap="small")
+    # KPI row — unchanged horizontal layout
+    st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Total Spend</div>
+          <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Categories</div>
+          <div class="kpi-value">{total_categories:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Suppliers</div>
+          <div class="kpi-value">{total_suppliers:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Part Numbers</div>
+          <div class="kpi-value">{part_count:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">PO Lines</div>
+          <div class="kpi-value">{total_lines:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# Smaller but consistent card style
-card_style = (
-    "background-color:#ffffff; border:1px solid #e5e7eb; border-radius:12px; "
-    "padding:12px 14px; height:100px; display:flex; flex-direction:column; "
-    "justify-content:center; text-align:center; box-shadow:0 1px 2px rgba(0,0,0,0.03);"
-)
-label_style = "color:#64748b; font-size:13px; margin-bottom:4px;"
-value_style = "color:#0f172a; font-size:22px; font-weight:700; letter-spacing:-0.5px;"
-
-with col1:
-    st.markdown(
-        f"<div style='{card_style}'><div style='{label_style}'>Total Spend</div>"
-        f"<div style='{value_style}'>€ {total_spend/1_000_000:,.1f} M</div></div>",
-        unsafe_allow_html=True,
-    )
-with col2:
-    st.markdown(
-        f"<div style='{card_style}'><div style='{label_style}'>Categories</div>"
-        f"<div style='{value_style}'>{total_categories:,}</div></div>",
-        unsafe_allow_html=True,
-    )
-with col3:
-    st.markdown(
-        f"<div style='{card_style}'><div style='{label_style}'>Suppliers</div>"
-        f"<div style='{value_style}'>{total_suppliers:,}</div></div>",
-        unsafe_allow_html=True,
-    )
-with col4:
-    st.markdown(
-        f"<div style='{card_style}'><div style='{label_style}'>Part Numbers</div>"
-        f"<div style='{value_style}'>{part_count:,}</div></div>",
-        unsafe_allow_html=True,
-    )
-with col5:
-    st.markdown(
-        f"<div style='{card_style}'><div style='{label_style}'>PO Lines</div>"
-        f"<div style='{value_style}'>{total_lines:,}</div></div>",
-        unsafe_allow_html=True,
-    )
-
-st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
 
     # Donut left, bar right (unchanged titles/separation)
     left, right = st.columns([1.05, 2.2], gap="large")
