@@ -1,11 +1,10 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer
-# A polished Streamlit app for ad-hoc Procurement diagnostics
-# - Uniform KPI row
-# - Crisp chart separation + titles
-# - Supplier→Category mix (Top-20) with % shares (no 'barnorm' dependency)
-# - Data-Quality card with pill badges + sample rows
-# - FX conversion via latest ECB
+# ProcureIQ — Spend Explorer (refined)
+# - KPI cards in one row (st.columns)
+# - Donut + Top supplier bar (clear separation, auto-scale x)
+# - Supplier×Category Mix (Top-20) with same order & colors as donut
+# - Data Quality pills + sample
+# - FX conversion (ECB); robust parsing; auto spend source validation
 # ──────────────────────────────────────────────────────────────────────────────
 
 import io, re
@@ -39,27 +38,17 @@ P_BAD     = "#ef4444"   # red-500
 st.markdown(
     f"""
     <style>
-      html, body, [class*="css"] {{ font-kerning: normal !important; }}
-
-      /* Header banner */
       .banner {{
         background: linear-gradient(135deg, rgba(14,165,233,.10), rgba(139,92,246,.06));
         border: 1px solid {P_BORDER};
         border-radius: 18px;
         padding: 20px 22px 18px 22px;
-        margin: 6px 0 10px 0;
+        margin: 6px 0 8px 0;
         box-shadow: 0 2px 6px rgba(2,8,23,.04);
       }}
       .app-title {{ font-size: 32px; font-weight: 800; letter-spacing: -.02rem; margin: 0; color: {P_TEXT}; }}
       .app-sub   {{ color: {P_TEXT2}; font-size: 14px; margin: 6px 0 0 0; }}
 
-      /* KPI row */
-      .kpi-grid {{
-        display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 14px;
-        margin: 12px 0 0 0;
-      }}
       .kpi-card {{
         background: #fff;
         border: 1px solid {P_BORDER};
@@ -68,17 +57,16 @@ st.markdown(
         padding: 16px 18px;
         display: flex; flex-direction: column; justify-content: center;
         box-shadow: 0 1px 3px rgba(2,8,23,.05);
+        width: 100%;
       }}
       .kpi-title {{ font-size: 0.95rem; color: {P_TEXT2}; margin-bottom: 8px; }}
       .kpi-value {{ font-size: 1.8rem; font-weight: 800; letter-spacing: -.02rem; white-space: nowrap; }}
       .kpi-unit  {{ font-weight: 700; font-size: 1.1rem; color: {P_TEXT2}; margin-left: .3rem; }}
 
       .block-title {{ font-weight: 800; font-size: 1.05rem; margin: 6px 0 8px 6px; color: {P_TEXT}; }}
-      .spacer-12 {{ margin-top: 12px; }}
-      .spacer-20 {{ margin-top: 20px; }}
+      .spacer-16 {{ margin-top: 16px; }}
       .spacer-24 {{ margin-top: 24px; }}
 
-      /* Data Quality */
       .dq-row {{ display:flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 12px 0; }}
       .dq-pill {{
         display:flex; align-items:center; gap:10px;
@@ -113,20 +101,15 @@ BASE = "EUR"
 
 # ============================== HELPERS =======================================
 def normalize_headers(cols): return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
-
 def parse_number_robust(x):
     if pd.isna(x): return np.nan
     if isinstance(x, (int, float)): return float(x)
     s = re.sub(r"[^\d,\.\-]", "", str(x))
-    if "," in s and "." in s:
-        s = s.replace(",", "")
-    elif "," in s and s.count(",")==1 and len(s.split(",")[-1]) in (2,3):
-        s = s.replace(",", ".")
-    else:
-        s = s.replace(",", "")
+    if "," in s and "." in s: s = s.replace(",", "")
+    elif "," in s and s.count(",")==1 and len(s.split(",")[-1]) in (2,3): s = s.replace(",", ".")
+    else: s = s.replace(",", "")
     try: return float(s)
     except: return np.nan
-
 def ensure_numeric_spend(s: pd.Series) -> pd.Series:
     if s.dtype == bool: s = s.astype(float)
     elif s.dtype.kind in ("i","u","f"): s = s.astype(float)
@@ -135,7 +118,6 @@ def ensure_numeric_spend(s: pd.Series) -> pd.Series:
 
 CURRENCY_SYMBOL_MAP = {"€":"EUR","$":"USD","£":"GBP","¥":"JPY","₩":"KRW","₹":"INR","₺":"TRY","R$":"BRL","S$":"SGD"}
 ISO_3 = {"EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD","CAD","MXN","BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS","VND","NGN","RUB"}
-
 def detect_iso_from_text(text):
     if text is None or (isinstance(text,float) and np.isnan(text)): return None
     s = str(text).upper().strip()
@@ -183,7 +165,6 @@ TARGETS = {
     "quantity":   ["quantity","qty","order qty","qty ordered","units","volume","po qty","po quantity","ordered qty"],
     "amount":     ["amount","purchase amount","line amount","total value","net value","extended price"]
 }
-
 def suggest_columns(df):
     cols = df.columns.tolist()
     norm = normalize_headers(cols)
@@ -207,7 +188,6 @@ def detect_spend_column(df):
     return max(med, key=med.get)
 
 def fmt_k(s: pd.Series) -> pd.Series: return (s/1_000.0).round(0)
-
 def detect_part_number_cols(df):
     norm = {c: c.lower() for c in df.columns}
     cues = ["item", "item number", "item no", "material", "material number", "sku", "code", "part", "pn", "material code"]
@@ -232,7 +212,6 @@ raw.columns = [str(c) for c in raw.columns]
 
 # ============================== MAPPING =======================================
 mapping = suggest_columns(raw)
-
 with st.sidebar:
     st.subheader("Column mapping")
     if "supplier" not in mapping:
@@ -289,10 +268,8 @@ df["unit_price_eur"] = pd.to_numeric(df["unit_price"], errors="coerce") * df["ra
 
 spend_col = detect_spend_column(raw)
 with st.sidebar:
-    if spend_col:
-        st.success(f"Detected **'{spend_col}'** as spend column.")
-    else:
-        st.warning("No clear spend column found; you can use Unit×Qty×FX instead.")
+    if spend_col: st.success(f"Detected **'{spend_col}'** as spend column.")
+    else: st.warning("No clear spend column found; you can use Unit×Qty×FX instead.")
 
 def _is_global_header(c): 
     return any(k in c.lower() for k in ["base curr","base currency","global curr","reporting curr"])
@@ -367,16 +344,17 @@ sup_tot = (df.groupby("supplier", dropna=False)
            .rename(columns={"supplier":"Supplier"}))
 sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
 
-# Part numbers for KPI
-part_cols = detect_part_number_cols(raw)
-part_count = 0
-if part_cols:
-    chosen = None
-    for c in part_cols:
-        if raw[c].notna().sum() > 0: chosen = c; break
-    if chosen: part_count = int(raw[chosen].astype(str).replace({"nan":np.nan}).nunique())
+# KPI: part numbers
+part_cols = []
+for c in raw.columns:
+    lc = c.lower()
+    if any(k in lc for k in ["item", "material", "sku", "code", "part", "pn"]):
+        part_cols.append(c)
+part_cols = [c for c in part_cols if raw[c].notna().sum() > 0]
+chosen_part = part_cols[0] if part_cols else None
+part_count = int(raw[chosen_part].astype(str).replace({"nan":np.nan}).nunique()) if chosen_part else 0
 
-# ============================== NAV ===========================================
+# Navigation
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
 # ============================== DASHBOARD =====================================
@@ -386,48 +364,49 @@ if page == "Dashboard":
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    # ---- KPI row (uniform) ----
-    st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Total Spend</div>
-          <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Categories</div>
-          <div class="kpi-value">{total_categories:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Suppliers</div>
-          <div class="kpi-value">{total_suppliers:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Part Numbers</div>
-          <div class="kpi-value">{part_count:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">PO Lines</div>
-          <div class="kpi-value">{total_lines:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    # KPI cards in one row (reliable)
+    c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
+    with c1:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">Total Spend</div>
+              <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
+            </div>''', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">Categories</div>
+              <div class="kpi-value">{total_categories:,}</div>
+            </div>''', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">Suppliers</div>
+              <div class="kpi-value">{total_suppliers:,}</div>
+            </div>''', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">Part Numbers</div>
+              <div class="kpi-value">{part_count:,}</div>
+            </div>''', unsafe_allow_html=True)
+    with c5:
+        st.markdown(f'''
+            <div class="kpi-card">
+              <div class="kpi-title">PO Lines</div>
+              <div class="kpi-value">{total_lines:,}</div>
+            </div>''', unsafe_allow_html=True)
 
-    st.markdown('<div class="spacer-20"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
 
-    # ---- Donut left, bars right with extra whitespace ----
+    # Donut left, bar right (more whitespace between)
     left, right = st.columns([1.05, 2.2], gap="large")
 
+    # -------- Left: donut
     with left:
         st.markdown('<div class="block-title">Spend by Category</div>', unsafe_allow_html=True)
-        st.slider("Top categories in donut", 5, min(15, len(cat)), min(10, len(cat)), key="donutN")
+        topN_default = 10 if len(cat) >= 10 else len(cat)
+        N = st.slider("Top categories in donut", 5, min(15, len(cat)), topN_default)
 
         donut_raw = (df.groupby("category_resolved", dropna=False)["_spend_eur"].sum()
                        .reset_index().rename(columns={"category_resolved":"Category","_spend_eur":"spend_eur"}))
@@ -436,16 +415,24 @@ if page == "Dashboard":
         if donut_raw.empty or donut_raw["spend_eur"].nunique(dropna=True) <= 1:
             st.error("Category spend looks degenerate. Check **Category source** in the sidebar.")
             st.dataframe(donut_raw.rename(columns={"spend_eur":"Spend (EUR)"}), use_container_width=True)
+            color_map = {}
         else:
-            topN_df = donut_raw.head(st.session_state.donutN)
-            other = float(donut_raw["spend_eur"].iloc[st.session_state.donutN:].sum())
+            topN_df = donut_raw.head(N)
+            other = float(donut_raw["spend_eur"].iloc[N:].sum())
             donut_df = pd.concat(
                 [topN_df, pd.DataFrame([{"Category":"Other","spend_eur":other}]) if other>0 else pd.DataFrame()],
                 ignore_index=True
             )
+            # establish a stable color map for categories (used also in mix)
+            palette = px.colors.qualitative.Set3 if PLOTLY else None
+            cats_in_palette = donut_df["Category"].tolist()
+            color_map = {c: palette[i % len(palette)] for i, c in enumerate(cats_in_palette)} if PLOTLY else {}
+
             if PLOTLY:
-                fig = px.pie(donut_df, names="Category", values="spend_eur",
-                             hole=.45, color_discrete_sequence=px.colors.qualitative.Set3)
+                fig = px.pie(
+                    donut_df, names="Category", values="spend_eur",
+                    hole=.45, color="Category", color_discrete_map=color_map
+                )
                 fig.update_traces(textposition="inside", textinfo="percent+label")
                 fig.update_layout(height=520, margin=dict(l=0,r=0,t=0,b=0),
                                   legend=dict(orientation="h", y=-0.16))
@@ -453,11 +440,15 @@ if page == "Dashboard":
             else:
                 st.dataframe(donut_df, use_container_width=True)
 
+    # -------- Right: bar
     with right:
         st.markdown('<div class="block-title">Top Suppliers by Spend</div>', unsafe_allow_html=True)
         top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20).copy()
         if PLOTLY and not top_sup.empty:
             top_sup["Spend_M"] = top_sup["spend_eur"]/1_000_000.0
+            max_m = float(top_sup["Spend_M"].max())
+            x_max = max(0.5, max_m * 1.15)
+
             fig2 = px.bar(
                 top_sup, x="Spend_M", y="Supplier", orientation="h",
                 text=top_sup["Spend_M"].map(lambda v: f"€ {v:,.1f} M"),
@@ -467,49 +458,60 @@ if page == "Dashboard":
             fig2.update_traces(textposition="outside", cliponaxis=False)
             fig2.update_layout(
                 height=520,
-                margin=dict(l=10, r=140, t=0, b=10),
+                margin=dict(l=10, r=40, t=0, b=10),
                 yaxis=dict(categoryorder="total ascending", automargin=True, ticksuffix="  "),
-                xaxis=dict(title="", showgrid=True, zeroline=False, gridcolor="#e5e7eb"),
+                xaxis=dict(title="", showgrid=True, zeroline=False, gridcolor="#e5e7eb", range=[0, x_max]),
                 plot_bgcolor="white", paper_bgcolor="white",
             )
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("No supplier spend to plot yet.")
+    # Save Top-20 order for mix
+    top20_suppliers = top_sup["Supplier"].tolist() if not top_sup.empty else []
 
-    # ---- Supplier × Category Mix (Top-20) — percent shares computed manually ----
+    # -------- Supplier × Category Mix
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.markdown('<div class="block-title">Supplier × Category Mix (Top 20 suppliers)</div>', unsafe_allow_html=True)
 
-    top20_suppliers = (sup_tot.sort_values("spend_eur", ascending=False)
-                       .head(20)["Supplier"].tolist())
-    mix = (df[df["supplier"].isin(top20_suppliers)]
-           .groupby(["supplier","category_resolved"])["_spend_eur"].sum()
-           .reset_index())
+    mix = pd.DataFrame()
+    if top20_suppliers:
+        mix = (df[df["supplier"].isin(top20_suppliers)]
+               .groupby(["supplier","category_resolved"])["_spend_eur"].sum()
+               .reset_index())
 
     if PLOTLY and not mix.empty:
-        # Compute % share per supplier (avoid barnorm)
         totals = mix.groupby("supplier")["_spend_eur"].transform("sum")
         mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
-        # Keep supplier order as in Top-20 ranking
-        mix["supplier"] = pd.Categorical(mix["supplier"], categories=list(reversed(top20_suppliers)), ordered=True)
+
+        # same supplier order as bar (bar shows ascending vertically)
+        mix["supplier"] = pd.Categorical(mix["supplier"],
+                                         categories=list(reversed(top20_suppliers)),
+                                         ordered=True)
+
+        # Use same color map as donut (fallback to Set3 for unseen cats)
+        if not color_map:
+            palette = px.colors.qualitative.Set3
+            all_cats = sorted(df["category_resolved"].dropna().unique().tolist())
+            color_map = {c: palette[i % len(palette)] for i, c in enumerate(all_cats)}
 
         fig3 = px.bar(
             mix, x="share_pct", y="supplier", color="category_resolved",
-            orientation="h", barmode="stack", color_discrete_sequence=px.colors.qualitative.Set3
+            orientation="h", barmode="stack",
+            color_discrete_map=color_map
         )
         fig3.update_layout(
-            height=max(520, len(top20_suppliers)*24 + 150),
-            margin=dict(l=10, r=40, t=10, b=10),
-            legend=dict(orientation="h", y=1.12, x=0, title="Category"),
+            height=max(540, len(top20_suppliers)*26 + 160),
+            margin=dict(l=10, r=40, t=90, b=10),  # extra top to keep legend away
+            legend=dict(orientation="h", y=1.14, x=0, title="Category"),
             xaxis=dict(title="Share (%)", ticksuffix="%", showgrid=True, gridcolor="#f1f5f9"),
             yaxis=dict(title="Supplier", automargin=True),
             plot_bgcolor="white", paper_bgcolor="white",
         )
         st.plotly_chart(fig3, use_container_width=True)
     else:
-        st.info("Mix chart will appear once Top-20 suppliers exist.")
+        st.info("Mix chart will appear once the Top-20 suppliers are available.")
 
-    # ---- Data Quality ---------------------------------------------------------
+    # -------- Data Quality (unchanged)
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
 
@@ -568,20 +570,20 @@ else:
         if "log"   in s: return (0.08,0.15)
         return (0.05,0.10)
 
-    cat = (df.groupby("category_resolved", dropna=False)
+    cat2 = (df.groupby("category_resolved", dropna=False)
            .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
                 suppliers=("supplier", pd.Series.nunique))
            .reset_index()
-           .rename(columns={"category_resolved":"Category","lines":"# PO Lines","# Suppliers":"# Suppliers"}))
-    cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
+           .rename(columns={"category_resolved":"Category","lines":"# PO Lines"}))
+    cat2["Spend (€ k)"] = fmt_k(cat2["spend_eur"])
 
-    rngs = [savings_range(c) for c in cat["Category"]]
-    cat["Savings Range (%)"] = [f"{int(a*100)}–{int(b*100)}" for a,b in rngs]
-    cat["Potential Min (€ k)"] = (cat["spend_eur"] * [a for a,b in rngs] / 1_000).round(0)
-    cat["Potential Max (€ k)"] = (cat["spend_eur"] * [b for a,b in rngs] / 1_000).round(0)
+    rngs = [savings_range(c) for c in cat2["Category"]]
+    cat2["Savings Range (%)"] = [f"{int(a*100)}–{int(b*100)}" for a,b in rngs]
+    cat2["Potential Min (€ k)"] = (cat2["spend_eur"] * [a for a,b in rngs] / 1_000).round(0)
+    cat2["Potential Max (€ k)"] = (cat2["spend_eur"] * [b for a,b in rngs] / 1_000).round(0)
 
     st.dataframe(
-        cat[["Category","Spend (€ k)","Savings Range (%)","Potential Min (€ k)","Potential Max (€ k)","# PO Lines","# Suppliers"]],
+        cat2[["Category","Spend (€ k)","Savings Range (%)","Potential Min (€ k)","Potential Max (€ k)","# PO Lines"]],
         use_container_width=True,
         column_config={
             "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
