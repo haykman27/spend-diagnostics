@@ -257,39 +257,48 @@ df["currency"] = df["currency"].fillna("")
 df = apply_fx_latest(df, fx)
 df["unit_price_eur"] = pd.to_numeric(df["unit_price"], errors="coerce") * df["rate_to_eur"]
 
-spend_col = detect_spend_column(raw)
-with st.sidebar:
-    if spend_col: st.success(f"Detected **'{spend_col}'** as spend column.")
-    else: st.warning("No clear spend column found; you can use Unit×Qty×FX instead.")
+# KPI row — using Streamlit columns for horizontal layout
+cols = st.columns(5)
 
-def _is_global_header(c): 
-    return any(k in c.lower() for k in ["base curr","base currency","global curr","reporting curr"])
-def _find_base_ccy_col(df_raw, spend_col_name):
-    cands=[c for c in df_raw.columns if c!=spend_col_name and any(k in c.lower() for k in
-        ["base curr code","base currency code","base curr","base currency","reporting curr","global curr"])]
-    return cands[0] if cands else None
+with cols[0]:
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Total Spend</div>
+          <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
+        </div>
+    ''', unsafe_allow_html=True)
 
-spend_detected = pd.Series(np.nan, index=df.index)
-if spend_col:
-    s = raw[spend_col].apply(parse_number_robust)
-    if _is_global_header(spend_col):
-        base_col = _find_base_ccy_col(raw, spend_col)
-        if base_col:
-            base_iso = raw[base_col].astype(str).apply(detect_iso_from_text).fillna("EUR")
-            fx_map  = dict(zip(fx["currency"], fx["rate_to_eur"]))
-            base_rt = base_iso.map(lambda c: fx_map.get(c,1.0))
-            spend_detected = pd.to_numeric(s, errors="coerce") * base_rt
-        else:
-            spend_detected = pd.to_numeric(s, errors="coerce")
-    else:
-        spend_detected = pd.to_numeric(s, errors="coerce") * df["rate_to_eur"]
+with cols[1]:
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Categories</div>
+          <div class="kpi-value">{total_categories:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
 
-spend_calc = (pd.to_numeric(df["unit_price"], errors="coerce") *
-              pd.to_numeric(df["quantity"], errors="coerce") *
-              df["rate_to_eur"])
+with cols[2]:
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Suppliers</div>
+          <div class="kpi-value">{total_suppliers:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
 
-with st.sidebar:
-    st.subheader("Spend source")
+with cols[3]:
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Part Numbers</div>
+          <div class="kpi-value">{part_count:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+
+with cols[4]:
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">PO Lines</div>
+          <div class="kpi-value">{total_lines:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
     mode = st.radio("Choose:", ["Use detected spend column","Use Unit×Qty×FX","Auto-validate"], index=2)
 
 def _mostly_zero(x):
