@@ -125,7 +125,7 @@ def detect_iso_from_text(text):
  
 @st.cache_data(ttl=6*60*60, show_spinner=False)
 def load_latest_ecb():
-    url = https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv
+    url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv"  # ← fixed: quoted string
     fx_wide = pd.read_csv(url)
     fx_wide.rename(columns={"Date":"date"}, inplace=True)
     fx_wide["date"] = pd.to_datetime(fx_wide["date"], errors="coerce")
@@ -475,9 +475,7 @@ if page == "Dashboard":
     # 1) exact same Top-20 suppliers (by name) as above
     top20_suppliers = top_sup["Supplier"].tolist() if 'top_sup' in locals() and not top_sup.empty else []
  
-    # 2) derive the order used by the supplier bar chart:
-    #    the bar used categoryorder="total ascending", so the visual order is ascending by spend.
-    #    To replicate it exactly, sort the same Top-20 list by spend ascending.
+    # 2) same order as bar chart (ascending by spend)
     if top20_suppliers:
         top20_order_for_mix = (
             sup_tot[sup_tot["Supplier"].isin(top20_suppliers)]
@@ -499,21 +497,15 @@ if page == "Dashboard":
     if PLOTLY and not mix.empty:
         totals = mix.groupby("Supplier")["_spend_eur"].transform("sum")
         mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
- 
-        # 4) enforce the SAME y-order as the bar chart
         mix["Supplier"] = pd.Categorical(mix["Supplier"], categories=top20_order_for_mix, ordered=True)
- 
-        # 5) same colors as donut (fall back if needed)
         if not 'color_map' in locals() or not color_map:
             palette = px.colors.qualitative.Set3
             all_cats = sorted(df["category_resolved"].dropna().unique().tolist())
             color_map = {c: palette[i % len(palette)] for i, c in enumerate(all_cats)}
- 
         fig3 = px.bar(
             mix, x="share_pct", y="Supplier", color="category_resolved",
             orientation="h", barmode="stack", color_discrete_map=color_map
         )
-        # legend BELOW chart to avoid overlap with first bar; generous bottom margin
         fig3.update_layout(
             height=max(560, len(top20_order_for_mix)*26 + 180),
             margin=dict(l=10, r=40, t=10, b=120),
