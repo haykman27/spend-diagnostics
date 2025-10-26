@@ -1,12 +1,12 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer (keep existing UI; fix Supplier×Category Mix order)
+# ProcureIQ — Spend Explorer (existing UI; Deep Dives uses verifiable sources)
 # ──────────────────────────────────────────────────────────────────────────────
 
-import io, re
+import io, re, json, math
 import numpy as np
 import pandas as pd
 import streamlit as st
-import requests  # ← for Wikipedia lookups
+import requests
 
 # Charts
 try:
@@ -14,6 +14,13 @@ try:
     PLOTLY = True
 except Exception:
     PLOTLY = False
+
+# Yahoo Finance (optional; app works without it)
+try:
+    import yfinance as yf
+    YF = True
+except Exception:
+    YF = False
 
 from rapidfuzz import process, fuzz
 
@@ -124,7 +131,7 @@ def detect_iso_from_text(text):
 
 @st.cache_data(ttl=6*60*60, show_spinner=False)
 def load_latest_ecb():
-    url = https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv
+    url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv"
     fx_wide = pd.read_csv(url)
     fx_wide.rename(columns={"Date":"date"}, inplace=True)
     fx_wide["date"] = pd.to_datetime(fx_wide["date"], errors="coerce")
@@ -188,85 +195,112 @@ def detect_part_number_cols(df):
     hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
     return hits
 
-# ========= helpers for Deep Dives (public web data → best-effort Wikipedia) ===
-def _parse_amount_to_millions_eur(text: str) -> float | None:
-    """
-    Try to parse strings like 'US$ 2.1 billion', '€3.4bn', '$500 million', '£120m' to a number in EUR millions.
-    Assumes 1:1 for major currencies if symbol found (to avoid introducing noisy FX). Best-effort.
-    """
-    if not text or not isinstance(text, str): return None
-    t = text.replace(",", "").lower()
-    # unit
-    unit = 1.0
-    if "billion" in t or "bn" in t: unit = 1_000.0
-    elif "million" in t or "mn" in t or "m" in t: unit = 1.0
-    # number
-    m = re.search(r"([0-9]+(\.[0-9]+)?)", t)
-    if not m: return None
-    val = float(m.group(1)) * unit
-    return val  # treat as EUR millions best-effort
+# ========= Deep Dives — Financials helpers (authoritative sources) ============
+@st.cache_data(ttl=24*60*60, show_spinner=False)
+def _sec_ticker_table():
+    """Official SEC list of company tickers with CIKs."""
+    url = "https://www.sec.gov/files/company_tickers.json"
+    headers = {"User-Agent": "ProcureIQ/1.0 (contact: procurement@example.com)"}
+    r = requests.get(url, headers=headers, timeout=15)
+    r.raise_for_status()
+    js = r.json()
+    # convert dict of {index:{cik_str,ticker,title}} to DataFrame
+    rows = []
+    for _, v in js.items():
+        rows.append({"cik": str(v["cik_str"]).zfill(10), "ticker": v["ticker"], "name": v["title"]})
+    return pd.DataFrame(rows)
+
+def _closest_sec_match(name: str, sec_df: pd.DataFrame, min_score=80):
+    if sec_df.empty: return None
+    cand_name = process.extractOne(name, sec_df["name"].tolist(), scorer=fuzz.WRatio)
+    cand_tic  = process.extractOne(name, sec_df["ticker"].tolist(), scorer=fuzz.WRatio)
+    best = None
+    if cand_name and cand_name[1] >= min_score:
+        best = sec_df.loc[sec_df["name"]==cand_name[0]].iloc[0]
+    if (not best) and cand_tic and cand_tic[1] >= min_score:
+        best = sec_df.loc[sec_df["ticker"]==cand_tic[0]].iloc[0]
+    return best
 
 @st.cache_data(ttl=24*60*60, show_spinner=False)
-def fetch_financials_wikipedia(supplier_name: str):
+def fetch_fin_sec_edgar(company_name: str):
     """
-    Best-effort: search Wikipedia, try to parse infobox for Revenue and Operating margin.
-    Returns: dict(revenue_m_eur, margin_pct, page_url, summary)
+    Best-effort US public company lookup via SEC EDGAR:
+      1) fuzzy match name to official SEC ticker list → CIK
+      2) companyfacts API → revenues & operating income
+    Returns dict: revenue_m_eur, margin_pct, source_url
     """
     try:
-        r = requests.get(
-            https://en.wikipedia.org/w/api.php,
-            params={"action": "opensearch", "search": supplier_name, "limit": 1, "namespace": 0, "format": "json"},
-            timeout=10,
-        )
-        data = r.json()
-        if not data or not data[1]:
-            return {"revenue_m_eur": None, "margin_pct": None, "page_url": None, "summary": None}
-        title = data[1][0]
-        page_url = fhttps://en.wikipedia.org/wiki/{title.replace(' ','_')}
-        html = requests.get(page_url + "?printable=yes", timeout=10).text
-        tables = []
-        try:
-            tables = pd.read_html(html)
-        except Exception:
-            tables = []
-        rev, margin = None, None
-        for t in tables:
-            if t.shape[1] < 2: 
-                continue
-            left = t.iloc[:, 0].astype(str).str.lower()
-            if any(k in left.values for k in ["revenue", "operating income", "operating margin", "net income"]):
-                # revenue
-                if "revenue" in left.values:
-                    v = str(t[left == "revenue"].iloc[0, 1])
-                    rev = _parse_amount_to_millions_eur(v)
-                # margin: prefer operating margin if explicitly present
-                if "operating margin" in left.values:
-                    v = str(t[left == "operating margin"].iloc[0, 1])
-                    m = re.search(r"([0-9]+(\.[0-9]+)?)\s*%", v)
-                    if m: margin = float(m.group(1))
-                elif "operating income" in left.values and rev:
-                    # If only operating income present, we cannot safely compute margin without revenue unit alignment → skip.
-                    pass
-        # summary
-        summary = None
-        try:
-            rs = requests.get(
-                https://en.wikipedia.org/api/rest_v1/page/summary/ + title.replace(" ", "_"),
-                timeout=10,
-                headers={"accept": "application/json"},
-            )
-            js = rs.json()
-            summary = js.get("extract")
-        except Exception:
-            summary = None
-        return {"revenue_m_eur": rev, "margin_pct": margin, "page_url": page_url, "summary": summary}
+        sec = _sec_ticker_table()
     except Exception:
-        return {"revenue_m_eur": None, "margin_pct": None, "page_url": None, "summary": None}
+        return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
 
-# ============================== UPLOAD (unchanged) ============================
+    match = _closest_sec_match(company_name, sec)
+    if match is None: 
+        return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
+
+    cik = match["cik"]
+    url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+    headers = {"User-Agent": "ProcureIQ/1.0 (contact: procurement@example.com)"}
+    try:
+        r = requests.get(url, headers=headers, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:
+        return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
+
+    def _latest_usgaap(tag):
+        try:
+            series = data["facts"]["us-gaap"][tag]["units"]
+        except Exception:
+            return None
+        # pick any unit (USD), take the most recent value
+        best_val, best_end = None, None
+        for unit, items in series.items():
+            for rec in items:
+                val = rec.get("val")
+                end = rec.get("end")
+                if val is None or not isinstance(val,(int,float)):
+                    continue
+                if (best_end is None) or (end and end > best_end):
+                    best_val, best_end = float(val), end
+        return best_val
+
+    rev = _latest_usgaap("Revenues") or _latest_usgaap("SalesRevenueNet")
+    opi = _latest_usgaap("OperatingIncomeLoss")
+    if rev and rev > 1:
+        # assume USD → EUR at ~1:1 to avoid noise; we could add ECB spot if you prefer
+        rev_m_eur = rev / 1_000_000.0
+        margin = (opi / rev * 100.0) if (opi is not None and rev > 0) else None
+        return {"revenue_m_eur": rev_m_eur, "margin_pct": margin, "source_url": url}
+    return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
+
+@st.cache_data(ttl=24*60*60, show_spinner=False)
+def fetch_fin_yfinance(ticker: str):
+    """Public company quick facts via Yahoo Finance (if yfinance is available)."""
+    if not YF or not ticker:
+        return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
+    try:
+        t = yf.Ticker(ticker)
+        info = t.get_info()
+        rev = info.get("totalRevenue") or info.get("revenue")
+        margin = info.get("operatingMargins")  # decimal (e.g. 0.12)
+        rev_m_eur = (rev / 1_000_000.0) if isinstance(rev,(int,float)) else None
+        margin_pct = (margin*100.0) if isinstance(margin,(int,float)) else None
+        return {
+            "revenue_m_eur": rev_m_eur,
+            "margin_pct": margin_pct,
+            "source_url": f"https://finance.yahoo.com/quote/{ticker}"
+        }
+    except Exception:
+        return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
+
+# ============================== UPLOAD (unchanged + optional financials) ======
 with st.sidebar:
     st.header("Data")
     uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
+    st.divider()
+    st.subheader("Supplier Financials (optional)")
+    fin_file = st.file_uploader("CSV/XLSX with supplier,revenue_eur_m,margin_pct[,ticker]", type=["csv","xlsx"])
 
 if not uploaded:
     st.info("Upload a file in the sidebar to start.")
@@ -274,6 +308,24 @@ if not uploaded:
 
 raw = pd.read_excel(uploaded)
 raw.columns = [str(c) for c in raw.columns]
+
+# optional authoritative financials
+fin_master = pd.DataFrame()
+if fin_file:
+    try:
+        if fin_file.name.lower().endswith(".csv"):
+            fin_master = pd.read_csv(fin_file)
+        else:
+            fin_master = pd.read_excel(fin_file)
+        fin_master.columns = [c.lower().strip() for c in fin_master.columns]
+        # normalize columns
+        need = {"supplier"}
+        if not need.issubset(set(fin_master.columns)):
+            st.warning("Financials file must include at least a 'supplier' column.")
+            fin_master = pd.DataFrame()
+    except Exception as e:
+        st.warning(f"Could not read financials file: {e}")
+        fin_master = pd.DataFrame()
 
 # ============================== MAPPING (unchanged) ===========================
 mapping = suggest_columns(raw)
@@ -409,7 +461,7 @@ sup_tot = (df.groupby("supplier", dropna=False)
            .rename(columns={"supplier":"Supplier"}))
 sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
 
-# Part numbers (unchanged logic you approved earlier)
+# Part numbers (unchanged logic)
 def detect_part_number_cols(df_in):
     norm = {c: c.lower() for c in df_in.columns}
     cues = ["item", "item number", "item no", "material", "material number", "sku", "code", "part", "pn", "material code"]
@@ -428,14 +480,15 @@ if part_cols:
         if raw[c].notna().sum() > 0:
             chosen = c; break
     if chosen:
-        chosen_part_col = chosen           # ← remember for deep dives
+        chosen_part_col = chosen
         part_count = int(raw[chosen].astype(str).replace({"nan":np.nan,"":np.nan}).nunique())
 
 # ============================== NAV (unchanged) ===============================
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
-# ============================== DASHBOARD (UNCHANGED except KPI layout) =======
+# ============================== DASHBOARD (unchanged except KPI columns) ======
 if page == "Dashboard":
+    # KPI row
     total_spend = float(df["_spend_eur"].sum())
     total_lines = int(len(df))
     total_suppliers = int(df["supplier"].nunique())
@@ -480,6 +533,7 @@ if page == "Dashboard":
 
     st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
 
+    # Donut & Top suppliers (unchanged)
     left, right = st.columns([1.05, 2.2], gap="large")
 
     with left:
@@ -536,6 +590,7 @@ if page == "Dashboard":
         else:
             st.info("No supplier spend to plot yet.")
 
+    # Supplier × Category mix (unchanged)
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.markdown('<div class="block-title">Supplier × Category Mix (Top 20 suppliers)</div>', unsafe_allow_html=True)
 
@@ -581,10 +636,9 @@ if page == "Dashboard":
     else:
         st.info("Mix chart will appear once the Top-20 suppliers are available.")
 
-    # ------------------------ DATA QUALITY (unchanged) ------------------------
+    # Data Quality (unchanged)
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
-
     unknown_ccy    = df["currency_iso"].isna() | (df["currency_iso"]=="")
     missing_price  = df["unit_price"].isna()
     missing_qty    = df["quantity"].isna()
@@ -626,11 +680,11 @@ if page == "Dashboard":
     else:
         st.success("No obvious data quality issues found in key fields.")
 
-# ============================== DEEP DIVES (REPLACED) =========================
+# ============================== DEEP DIVES (new verified sources) =============
 else:
     st.subheader("Deep Dives")
 
-    # 1) Category selector
+    # Category selector
     categories = sorted(df["category_resolved"].dropna().unique().tolist())
     if not categories:
         st.info("No categories found in the dataset.")
@@ -643,7 +697,7 @@ else:
         st.info("No lines for this category.")
         st.stop()
 
-    # 2) Suppliers within the category, sorted by spend
+    # Suppliers in category, sorted by spend; PN counts
     sup_cat = (
         df_cat.groupby("supplier", dropna=False)
         .agg(spend_eur=("_spend_eur", "sum"),
@@ -654,7 +708,6 @@ else:
     )
     sup_cat["Spend_M"] = sup_cat["spend_eur"]/1_000_000.0
 
-    # Bar + metrics (similar to Top-20)
     st.markdown(f'**Suppliers in “{sel_cat}” (sorted by spend)**')
     if PLOTLY:
         fig = px.bar(
@@ -672,32 +725,77 @@ else:
             plot_bgcolor="white", paper_bgcolor="white",
         )
         st.plotly_chart(fig, use_container_width=True)
-    st.caption("Tip: Hover bars for values. “Part Numbers” shown below.")
 
-    # Show PN counts table next to the chart for clarity
     st.dataframe(
         sup_cat[["Supplier","Part Numbers","Spend_M"]]
             .rename(columns={"Spend_M":"Spend (€ M)"}),
-        use_container_width=True,
-        hide_index=True
+        use_container_width=True, hide_index=True
     )
 
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
 
-    # 3) Revenue & Margin bubbles (best-effort Wikipedia)
-    st.markdown("**Supplier financials (public sources; where available)**")
+    # Build verified financials per supplier (authoritative first)
     fin_rows = []
+    fin_master_norm = {}
+    if not fin_master.empty:
+        # map: supplier lower → (rev, margin, ticker)
+        for _, r in fin_master.iterrows():
+            s = str(r.get("supplier","")).strip()
+            if not s: 
+                continue
+            fin_master_norm[s.lower()] = {
+                "revenue_m_eur": r.get("revenue_eur_m"),
+                "margin_pct": r.get("margin_pct"),
+                "ticker": r.get("ticker")
+            }
+
     for s in sup_cat["Supplier"]:
-        fin = fetch_financials_wikipedia(str(s))
+        s_key = str(s).lower()
+        # 1) Your uploaded file overrides everything
+        if s_key in fin_master_norm:
+            rec = fin_master_norm[s_key]
+            rev = rec.get("revenue_m_eur")
+            mar = rec.get("margin_pct")
+            tk  = rec.get("ticker")
+            used = None
+            if (rev is None or (isinstance(rev,float) and math.isnan(rev))) and tk:
+                # if you gave us a ticker but no numbers, try yfinance
+                y = fetch_fin_yfinance(str(tk))
+                rev = rev if pd.notna(rev) else y["revenue_m_eur"]
+                mar = mar if pd.notna(mar) else y["margin_pct"]
+                used = y["source_url"]
+            fin_rows.append({
+                "Supplier": s,
+                "Revenue (€ M)": rev if pd.notna(rev) else None,
+                "Margin (%)": mar if pd.notna(mar) else None,
+                "Spend (€ M)": float(sup_cat.loc[sup_cat["Supplier"]==s,"Spend_M"].values[0]),
+                "Source": used
+            })
+            continue
+
+        # 2) SEC EDGAR (US public companies) best-effort
+        fin = fetch_fin_sec_edgar(str(s))
+        # 3) If still missing and we have a recognizable ticker in the name (rare), try yfinance
+        if (fin["revenue_m_eur"] is None or fin["margin_pct"] is None) and YF:
+            # try quick guess: exact ticker present? (e.g., 'Company AG (XYZ.DE)')
+            m = re.search(r"\(([A-Za-z\.]{1,15})\)$", str(s))
+            if m:
+                y = fetch_fin_yfinance(m.group(1))
+                if fin["revenue_m_eur"] is None: fin["revenue_m_eur"] = y["revenue_m_eur"]
+                if fin["margin_pct"]   is None: fin["margin_pct"]   = y["margin_pct"]
+                if not fin.get("source_url"):   fin["source_url"]   = y["source_url"]
+
         fin_rows.append({
             "Supplier": s,
             "Revenue (€ M)": fin["revenue_m_eur"],
             "Margin (%)": fin["margin_pct"],
             "Spend (€ M)": float(sup_cat.loc[sup_cat["Supplier"]==s,"Spend_M"].values[0]),
-            "Source": fin["page_url"]
+            "Source": fin["source_url"]
         })
+
     fin_df = pd.DataFrame(fin_rows)
     fin_plot = fin_df.dropna(subset=["Revenue (€ M)", "Margin (%)"])
+    st.markdown("**Supplier financials (verified sources; where available)**")
     if PLOTLY and not fin_plot.empty:
         bubble = px.scatter(
             fin_plot, x="Revenue (€ M)", y="Margin (%)",
@@ -712,32 +810,55 @@ else:
         )
         st.plotly_chart(bubble, use_container_width=True)
     else:
-        st.info("No reliable public revenue/margin found for the suppliers in this category yet.")
+        st.info("No reliable revenue/margin found from authoritative sources for the current suppliers yet. "
+                "Upload a 'Supplier Financials' file in the sidebar to enrich coverage, "
+                "or pick a different category.")
 
-    # 4) Drill-in: pick a supplier → profile
+    # Drill-in
     st.markdown("### Supplier overview")
     pick = st.selectbox("Select a supplier for details", sup_cat["Supplier"].tolist(), index=0)
-    fin = fetch_financials_wikipedia(str(pick))
+
+    # collect details using the same precedence
+    details = {"revenue_m_eur": None, "margin_pct": None, "source": None}
+    s_key = str(pick).lower()
+    if s_key in fin_master_norm:
+        rec = fin_master_norm[s_key]
+        details["revenue_m_eur"] = rec.get("revenue_eur_m")
+        details["margin_pct"]    = rec.get("margin_pct")
+        if (details["revenue_m_eur"] is None or details["margin_pct"] is None) and rec.get("ticker"):
+            y = fetch_fin_yfinance(str(rec["ticker"]))
+            details["revenue_m_eur"] = details["revenue_m_eur"] or y["revenue_m_eur"]
+            details["margin_pct"]    = details["margin_pct"] or y["margin_pct"]
+            details["source"]        = y["source_url"]
+    else:
+        fin = fetch_fin_sec_edgar(str(pick))
+        if fin["revenue_m_eur"] or fin["margin_pct"]:
+            details = {"revenue_m_eur": fin["revenue_m_eur"], "margin_pct": fin["margin_pct"], "source": fin["source_url"]}
+        elif YF:
+            # last try: try to parse a trailing ticker in parentheses
+            m = re.search(r"\(([A-Za-z\.]{1,15})\)$", str(pick))
+            if m:
+                y = fetch_fin_yfinance(m.group(1))
+                details = {"revenue_m_eur": y["revenue_m_eur"], "margin_pct": y["margin_pct"], "source": y["source_url"]}
 
     colA, colB = st.columns([2,1], gap="large")
     with colA:
-        st.write(f"**Summary (Wikipedia)**")
-        if fin["summary"]:
-            st.write(fin["summary"])
-        else:
-            st.write("_No public summary found._")
-        if fin["page_url"]:
-            st.markdown(f"[Wikipedia source]({fin['page_url']})")
+        st.write("**Notes on sources**")
+        if details["source"]:
+            st.markdown(f"- Financials source: <{details['source']}>")
+        if not details["source"]:
+            st.write("_No authoritative public source matched. Consider uploading a Supplier Financials file for this vendor._")
 
     with colB:
-        st.metric("Revenue (EUR million)", f"{fin['revenue_m_eur']:,.0f}" if fin["revenue_m_eur"] else "N/A")
-        st.metric("Margin (%)", f"{fin['margin_pct']:.1f}%" if fin["margin_pct"] is not None else "N/A")
-        # coarse stability signal based on available info (not invented numbers)
+        st.metric("Revenue (EUR million)", f"{details['revenue_m_eur']:,.0f}" if details["revenue_m_eur"] else "N/A")
+        st.metric("Margin (%)", f"{details['margin_pct']:.1f}%" if details["margin_pct"] is not None else "N/A")
+        # coarse stability signal (only from verified numbers)
         stability = "Insufficient data"
-        if fin["revenue_m_eur"] and fin["margin_pct"] is not None:
-            if fin["revenue_m_eur"] > 500 and fin["margin_pct"] >= 5:
+        rev = details["revenue_m_eur"]; mar = details["margin_pct"]
+        if rev and mar is not None:
+            if rev > 500 and mar >= 5:
                 stability = "Likely stable (sizeable revenue & decent margin)"
-            elif fin["revenue_m_eur"] > 100 and fin["margin_pct"] >= 2:
+            elif rev > 100 and mar >= 2:
                 stability = "Moderate (medium size, thin margins)"
             else:
                 stability = "Potentially fragile (small/low margin)"
