@@ -1,7 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer
-# Robust parsing, ECB FX, category resolution (Family/Group), dashboard revamp,
-# supplier bars widened, KPI re-order incl. Part Numbers, and Data Quality card.
+# ProcureIQ — Spend Explorer (Polished UI + Data Quality fix)
 # ──────────────────────────────────────────────────────────────────────────────
 
 import io, re
@@ -16,42 +14,63 @@ try:
 except Exception:
     PLOTLY_AVAILABLE = False
 
-try:
-    from streamlit_plotly_events import plotly_events
-    PLOTLY_EVENTS_AVAILABLE = True
-except Exception:
-    PLOTLY_EVENTS_AVAILABLE = False
-
 from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
 
-# ── Minimal chrome (brand header, no long instructions)
+# --------------------------- THEME & STYLES -----------------------------------
+P_PRIMARY = "#10b981"     # teal-500
+P_ACCENT  = "#6366f1"     # indigo-500
+P_BG_SOFT = "#f8fafc"     # slate-50
+P_TEXT_2  = "#64748b"     # slate-500
+P_BORDER  = "#e5e7eb"     # gray-200
+
 st.markdown(
-    """
+    f"""
     <style>
-      .app-title {font-size:32px; font-weight:800; letter-spacing:-.02rem; margin:0 0 6px 0;}
-      .app-sub   {color:#64748b; font-size:14px; margin:0 0 18px 0;}
-      .kpi-card { background:#fff;border:1px solid #EEE;border-radius:14px;padding:16px 18px;
-                  box-shadow:0 1px 3px rgba(0,0,0,.04); height:100%;}
-      .kpi-title { font-size:.95rem;color:#6b7280;margin-bottom:6px;}
-      .kpi-value { font-size:2rem;font-weight:700;letter-spacing:-.02rem; }
-      .pill{display:inline-block;background:#f1f5f9;border:1px solid #e5e7eb;padding:6px 10px;border-radius:999px;margin-right:8px;}
-      .tag-ok{background:#e7f5e6;color:#166534;border:1px solid #bbf7d0;padding:2px 8px;border-radius:999px;font-size:12px;}
-      .tag-warn{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;padding:2px 8px;border-radius:999px;font-size:12px;}
-      .tag-bad{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:2px 8px;border-radius:999px;font-size:12px;}
-      .mt-12{margin-top:12px;} .mt-16{margin-top:16px;} .mt-24{margin-top:24px;}
-      [data-testid="stSidebar"]{min-width:360px;max-width:400px;}
+      html, body, [class*="css"] {{
+        font-kerning: normal !important;
+      }}
+      .banner {{
+        background: radial-gradient(1200px 400px at 20% -20%, #ecfeff 10%, #eef2ff 60%, white 80%);
+        border: 1px solid {P_BORDER};
+        border-radius: 18px; padding: 20px 22px; margin-bottom: 10px;
+      }}
+      .app-title {{ font-size:32px; font-weight:800; letter-spacing:-.02rem; margin:0; }}
+      .app-sub   {{ color:{P_TEXT_2}; font-size:14px; margin:6px 0 0 0; }}
+
+      .kpi-card {{ background:#fff;border:1px solid {P_BORDER};border-radius:14px;padding:16px 18px;
+                  box-shadow:0 1px 3px rgba(0,0,0,.04); height:100%; }}
+      .kpi-title {{ font-size:.95rem;color:{P_TEXT_2};margin-bottom:6px; }}
+      .kpi-value {{ font-size:2rem;font-weight:800;letter-spacing:-.02rem; }}
+
+      .tag-ok   {{background:#e7f5e6;color:#166534;border:1px solid #bbf7d0;padding:4px 10px;border-radius:999px;font-size:12px;}}
+      .tag-warn {{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;padding:4px 10px;border-radius:999px;font-size:12px;}}
+      .tag-bad  {{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:4px 10px;border-radius:999px;font-size:12px;}}
+
+      .mt-8 {{margin-top:8px;}} .mt-12 {{margin-top:12px;}} .mt-16 {{margin-top:16px;}} .mt-24 {{margin-top:24px;}}
+      [data-testid="stSidebar"]{{min-width:360px;max-width:400px;}}
     </style>
     """,
     unsafe_allow_html=True,
 )
-st.markdown('<div class="app-title">ProcureIQ — Spend Explorer</div>', unsafe_allow_html=True)
-st.markdown('<div class="app-sub">Upload your spend cube, map columns in the sidebar, pick the category source, and explore.</div>', unsafe_allow_html=True)
+
+# ------------------------------- HEADER ---------------------------------------
+st.markdown(
+    """
+    <div class="banner">
+      <div class="app-title">ProcureIQ — Spend Explorer</div>
+      <div class="app-sub">
+        Upload your spend cube, map columns in the sidebar, pick the category source, and explore.
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 BASE = "EUR"
 
-# ── Helpers
+# ------------------------------- HELPERS --------------------------------------
 def normalize_headers(cols):
     return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 
@@ -151,18 +170,16 @@ def fmt_k(s: pd.Series) -> pd.Series:
     return (s/1_000.0).round(0)
 
 def detect_part_number_cols(df):
-    """Likely part number columns for KPI (item code, material, SKU...)."""
     norm = {c: c.lower() for c in df.columns}
     cues = ["item", "item number", "item no", "material", "material number", "sku", "code", "part", "pn", "material code"]
     hits = []
     for c, n in norm.items():
         if any(k in n for k in cues):
             hits.append(c)
-    # Put 'item number' and 'material' ahead
     hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
     return hits
 
-# ── Upload
+# ------------------------------- UPLOAD ---------------------------------------
 with st.sidebar:
     st.header("Data")
     uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
@@ -174,7 +191,7 @@ if not uploaded:
 raw = pd.read_excel(uploaded)
 raw.columns = [str(c) for c in raw.columns]
 
-# ── Mapping + Category source
+# ---------------------- MAPPING & CATEGORY SOURCE -----------------------------
 mapping = suggest_columns(raw)
 
 with st.sidebar:
@@ -193,7 +210,7 @@ for k in ["supplier","currency","unit_price","quantity","category","cat_family",
     if k in mapping:
         df[k] = raw[mapping[k]]
 
-# Category candidates
+# category candidates
 cat_cands, label_to_col = [], {}
 def _add_cand(label, colname):
     if colname and colname in df.columns and df[colname].notna().any():
@@ -222,7 +239,7 @@ with st.sidebar:
 resolved_cat_col = label_to_col[cat_choice]
 df["category_resolved"] = df[resolved_cat_col].copy()
 
-# ── Parsing + FX + Spend
+# -------------------------- PARSE + FX + SPEND --------------------------------
 df["unit_price"] = df["unit_price"].apply(parse_number_robust)
 df["quantity"]   = df["quantity"].apply(parse_number_robust)
 
@@ -300,7 +317,7 @@ with st.sidebar:
         f"Unit×Qty×FX total: € {np.nansum(spend_calc):,.0f}"
     )
 
-# ── Aggregates
+# --------------------------- AGGREGATES ---------------------------------------
 cat = (df.groupby("category_resolved", dropna=False)
        .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
             suppliers=("supplier", pd.Series.nunique))
@@ -315,18 +332,10 @@ sup_tot = (df.groupby("supplier", dropna=False)
            .rename(columns={"supplier":"Supplier"}))
 sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
 
-sup_cat = (df.groupby(["supplier","category_resolved"], dropna=False)["_spend_eur"]
-             .sum().reset_index()
-             .rename(columns={"supplier":"Supplier","category_resolved":"Category","_spend_eur":"Spend_EUR"}))
-
-# ── Navigation
-page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
-
-# ── KPI helpers
+# Part numbers for KPI
 part_cols = detect_part_number_cols(raw)
-part_count = int(pd.Series(dtype=object).nunique())
+part_count = 0
 if part_cols:
-    # pick first non-empty col
     chosen = None
     for c in part_cols:
         if raw[c].notna().sum() > 0:
@@ -334,9 +343,10 @@ if part_cols:
     if chosen:
         part_count = int(raw[chosen].astype(str).replace({"nan":np.nan}).nunique())
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Dashboard
-# ══════════════════════════════════════════════════════════════════════════════
+# ----------------------------- NAV -------------------------------------------
+page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
+
+# ============================== DASHBOARD =====================================
 if page == "Dashboard":
     total_spend = float(df["_spend_eur"].sum())
     total_lines = int(len(df))
@@ -352,8 +362,8 @@ if page == "Dashboard":
 
     st.markdown('<div class="mt-16"></div>', unsafe_allow_html=True)
 
-    # Wider layout: donut (left) vs wide bars (right)
-    col_left, col_right = st.columns([1.0, 1.9])
+    # Wider layout: donut (left) vs very wide bars (right)
+    col_left, col_right = st.columns([1.0, 2.0])
 
     with col_left:
         st.slider("Top categories in donut", 5, min(15, len(cat)), min(10, len(cat)), key="donutN")
@@ -372,7 +382,7 @@ if page == "Dashboard":
                 fig = px.pie(donut_df, names="Category", values="spend_eur",
                              hole=.45, color_discrete_sequence=px.colors.qualitative.Set3)
                 fig.update_traces(textposition="inside", textinfo="percent+label")
-                fig.update_layout(height=540, margin=dict(l=10,r=10,t=10,b=120),
+                fig.update_layout(height=560, margin=dict(l=0,r=0,t=10,b=120),
                                   legend=dict(orientation="h", y=-0.12))
                 st.plotly_chart(fig, use_container_width=True)
             else:
@@ -387,55 +397,53 @@ if page == "Dashboard":
                 top_sup, x="Spend_M", y="Supplier", orientation="h",
                 text=top_sup["Spend_M"].map(lambda v: f"€ {v:,.1f} M"),
                 labels={"Spend_M":"Spend (€ M)"},
-                color_discrete_sequence=["#14b8a6"],
+                color_discrete_sequence=[P_PRIMARY],
             )
-            # Wider plot area, generous margins for labels
             fig2.update_traces(textposition="outside", cliponaxis=False)
             fig2.update_layout(
-                height=540,
-                margin=dict(l=10, r=80, t=10, b=10),
+                height=560,
+                margin=dict(l=10, r=120, t=10, b=10),
                 yaxis=dict(categoryorder="total ascending", automargin=True, ticksuffix="  "),
                 xaxis=dict(title="", showgrid=True, zeroline=False),
+                plot_bgcolor="white", paper_bgcolor="white",
             )
             st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("No supplier spend to plot yet.")
 
-    # ── Data Quality card
+    # ------------------------ DATA QUALITY (fixed) -----------------------------
     st.markdown('<div class="mt-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
-    dq = []
 
-    # Checks
-    unknown_ccy = df["currency_iso"].isna() | (df["currency_iso"]=="")
-    dq.append(("Unknown currency", int(unknown_ccy.sum())))
-    price_missing = df["unit_price"].isna().sum()
-    dq.append(("Missing unit price", int(price_missing)))
-    qty_missing = df["quantity"].isna().sum()
-    dq.append(("Missing quantity", int(qty_missing)))
-    zero_or_neg_price = (pd.to_numeric(df["unit_price"], errors="coerce")<=0).sum()
-    dq.append(("Zero/negative price", int(zero_or_neg_price)))
-    zero_or_neg_qty = (pd.to_numeric(df["quantity"], errors="coerce")<=0).sum()
-    dq.append(("Zero/negative qty", int(zero_or_neg_qty)))
-    supplier_blank = (df["supplier"].astype(str).str.strip()=="").sum()
-    dq.append(("Blank supplier", int(supplier_blank)))
-    cat_blank = (df["category_resolved"].astype(str).str.strip()=="").sum()
-    dq.append(("Blank category", int(cat_blank)))
+    unknown_ccy       = df["currency_iso"].isna() | (df["currency_iso"]=="")
+    missing_price     = df["unit_price"].isna()
+    missing_qty       = df["quantity"].isna()
+    zero_neg_price    = (pd.to_numeric(df["unit_price"], errors="coerce")<=0)
+    zero_neg_qty      = (pd.to_numeric(df["quantity"], errors="coerce")<=0)
+    blank_supplier    = (df["supplier"].astype(str).str.strip()=="")
+    blank_category    = (df["category_resolved"].astype(str).str.strip()=="")
 
-    # Summary tags
-    c1,c2,c3,c4,c5,c6,c7 = st.columns(7)
-    cards = [c1,c2,c3,c4,c5,c6,c7]
-    for (label, val), col in zip(dq, cards):
+    dq_pairs = [
+        ("Unknown currency", int(unknown_ccy.sum())),
+        ("Missing unit price", int(missing_price.sum())),
+        ("Missing quantity", int(missing_qty.sum())),
+        ("Zero/negative price", int(zero_neg_price.sum())),
+        ("Zero/negative qty", int(zero_neg_qty.sum())),
+        ("Blank supplier", int(blank_supplier.sum())),
+        ("Blank category", int(blank_category.sum())),
+    ]
+
+    cols = st.columns(len(dq_pairs))
+    for (label, val), c in zip(dq_pairs, cols):
         tag = "tag-ok" if val==0 else ("tag-warn" if val<10 else "tag-bad")
-        col.markdown(f'<div class="{tag}">{label}: {val}</div>', unsafe_allow_html=True)
+        c.markdown(f'<span class="{tag}">{label}: {val}</span>', unsafe_allow_html=True)
 
-    # Sample problem rows
-    issues_mask = (unknown_ccy | (df["unit_price"].isna()) | (df["quantity"].isna()) |
-                   (pd.to_numeric(df["unit_price"], errors="coerce")<=0) |
-                   (pd.to_numeric(df["quantity"], errors="coerce")<=0) |
-                   (df["supplier"].astype(str).str.strip()=="") |
-                   (df["category_resolved"].astype(str).str.strip()==""))
-    issues = df.loc[issues_mask, ["supplier","category_resolved","currency","unit_price","quantity","_spend_eur"]].head(200)
+    # Sample problematic rows (defensive: only select columns that exist)
+    issues_mask = (unknown_ccy | missing_price | missing_qty |
+                   zero_neg_price | zero_neg_qty | blank_supplier | blank_category)
+    sample_cols = [c for c in ["supplier","category_resolved","currency","unit_price","quantity","_spend_eur"]
+                   if c in df.columns]
+    issues = df.loc[issues_mask, sample_cols].head(200)
     if not issues.empty:
         st.dataframe(issues.rename(columns={
             "supplier":"Supplier","category_resolved":"Category","currency":"Currency",
@@ -443,9 +451,7 @@ if page == "Dashboard":
     else:
         st.success("No obvious data quality issues found in key fields.")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Deep Dives (unchanged besides using category_resolved everywhere)
-# ══════════════════════════════════════════════════════════════════════════════
+# ============================== DEEP DIVES =====================================
 else:
     st.subheader("Deep Dives")
 
@@ -458,10 +464,17 @@ else:
         if "log"   in s: return (0.08,0.15)
         return (0.05,0.10)
 
+    cat = (df.groupby("category_resolved", dropna=False)
+           .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
+                suppliers=("supplier", pd.Series.nunique))
+           .reset_index().rename(columns={"category_resolved":"Category","lines":"# PO Lines","suppliers":"# Suppliers"}))
+    cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
+
     rngs = [savings_range(c) for c in cat["Category"]]
     cat["Savings Range (%)"] = [f"{int(a*100)}–{int(b*100)}" for a,b in rngs]
     cat["Potential Min (€ k)"] = (cat["spend_eur"] * [a for a,b in rngs] / 1_000).round(0)
     cat["Potential Max (€ k)"] = (cat["spend_eur"] * [b for a,b in rngs] / 1_000).round(0)
+
     st.dataframe(
         cat[["Category","Spend (€ k)","Savings Range (%)","Potential Min (€ k)","Potential Max (€ k)","# PO Lines","# Suppliers"]],
         use_container_width=True,
@@ -472,7 +485,7 @@ else:
         }
     )
 
-# ── Downloads unchanged
+# ------------------------------ DOWNLOADS -------------------------------------
 st.divider()
 st.markdown("#### Download full dataset & summaries (XLSX)")
 buf = io.BytesIO()
@@ -480,6 +493,11 @@ with pd.ExcelWriter(buf, engine="openpyxl") as w:
     df.to_excel(w, index=False, sheet_name="Lines")
     cat.to_excel(w, index=False, sheet_name="Categories")
     sup_tot.to_excel(w, index=False, sheet_name="Suppliers")
-    sup_cat.to_excel(w, index=False, sheet_name="Supplier_x_Category")
-st.download_button("Download results.xlsx", buf.getvalue(), "procurement_diagnostics_results.xlsx",
-                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    # optional: supplier x category detail
+    (df.groupby(["supplier","category_resolved"])["_spend_eur"].sum()
+       .reset_index().rename(columns={"supplier":"Supplier","category_resolved":"Category","_spend_eur":"Spend (EUR)"})
+       .to_excel(w, index=False, sheet_name="Supplier_x_Category"))
+st.download_button(
+    "Download results.xlsx", buf.getvalue(), "procurement_diagnostics_results.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
