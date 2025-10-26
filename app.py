@@ -1,30 +1,16 @@
-# ProcureIQ — Spend Explorer (full, robust version)
-# -------------------------------------------------------------------
-# - Sidebar: upload, mapping, spend source selection (detected vs Unit×Qty)
-# - Horizontal KPI banners (equal sized)
-# - Donut: Spend by Category (safe slider)
-# - Top Suppliers by Spend (auto x-scale)
-# - Supplier × Category Mix (Top-20 order & colors)
-# - Data Quality pills + sample issue table
-# - Part numbers metric (robust detection)
-# - No external network dependency (FX=1 unless you supply)
-# -------------------------------------------------------------------
-
+# ProcureIQ — Spend Explorer (full, robust version with safe slider)
 from __future__ import annotations
-import io
 import re
-import math
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-# Plotly is used for charts; if unavailable, we degrade to tables.
 try:
     import plotly.express as px
     PLOTLY = True
-except Exception:  # pragma: no cover
+except Exception:
     PLOTLY = False
 
 # ----------------------------- PAGE SETUP -----------------------------
@@ -32,7 +18,6 @@ st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
 
 st.markdown("""
 <style>
-  /* Sidebar sizing */
   [data-testid="stSidebar"] { min-width:360px; max-width:420px; }
 
   .banner {
@@ -49,9 +34,7 @@ st.markdown("""
   .block-title { font-weight: 800; font-size: 1.05rem; margin: 6px 0 8px 6px; color: #0f172a; }
   .spacer-12 { margin-top: 12px; }
   .spacer-16 { margin-top: 16px; }
-  .spacer-24 { margin-top: 24px; }
 
-  /* KPI cards */
   .kpi-card {
     background:#ffffff; border:1px solid #e5e7eb; border-radius:12px;
     padding:12px 14px; height:100px; display:flex; flex-direction:column;
@@ -60,7 +43,6 @@ st.markdown("""
   .kpi-lbl { color:#64748b; font-size:13px; margin-bottom:4px; }
   .kpi-val { color:#0f172a; font-size:22px; font-weight:700; letter-spacing:-0.5px; }
 
-  /* Data quality */
   .dq-row { display:flex; flex-wrap:wrap; gap:10px; margin: 6px 0 12px 0; }
   .dq-pill {
     display:flex; align-items:center; gap:10px;
@@ -144,44 +126,36 @@ qty_col   = _first(df, ["qty","quantity","q'ty"])
 price_col = _first(df, ["price","unit cost","unit price"])
 spend_col = _first(df, ["spend","amount","value","purchase amount"])
 
-# Part number candidates
 part_candidates = _candidates(df, ["part", "item number", "item code", "sku", "material", "pn", "item_no", "item id"])
 
-# Allow category choice (matches your previous UX)
 with st.sidebar:
     st.header("Category source")
     choices = [k for k,v in cat_options.items() if v]
-    default_label = choices[0] if choices else None
     cat_choice = st.radio("Use this as Category:", choices if choices else ["(not found)"], index=0 if choices else 0)
     category_col = cat_options.get(cat_choice)
 
-    # Column mapping info
     st.subheader("Column mapping")
     st.success(f"Detected '{spend_col}' as spend column." if spend_col else
                ("Detected quantity+unit price." if qty_col and price_col else
                 "No direct spend or qty×price detected — please review your file."))
 
 # ----------------------------- CANONICAL FIELDS -----------------------------
-df["supplier_canon"] = _norm(df[supplier_col]) if supplier_col in df.columns else ""
+df["supplier_canon"]   = _norm(df[supplier_col]) if supplier_col in df.columns else ""
 df["category_resolved"] = _norm(df[category_col]) if category_col in df.columns else ""
 
-# Spend computation (no external FX; FX=1 by default)
 if spend_col and spend_col in df.columns:
     df["_spend_eur"] = df[spend_col].map(_num)
 elif qty_col and price_col and qty_col in df.columns and price_col in df.columns:
     df["_spend_eur"] = df[qty_col].map(_num) * df[price_col].map(_num)
 else:
     df["_spend_eur"] = 0.0
-
 df["_spend_eur"] = df["_spend_eur"].fillna(0).clip(lower=0)
 
 # ----------------------------- PART NUMBERS -----------------------------
-# Robust counting across typical columns; fallback to distinct (supplier, description) rows if nothing exists.
 part_cols = [c for c in part_candidates if c in df.columns]
 if part_cols:
     part_number_count = int(pd.unique(pd.concat([_norm(df[c]) for c in part_cols], axis=0)).size)
 else:
-    # Fallback heuristic: treat distinct rows as parts (very rough, but non-zero)
     part_number_count = int(df.drop_duplicates([supplier_col, category_col]).shape[0])
 
 # ----------------------------- KPIs (HORIZONTAL) -----------------------------
@@ -220,31 +194,47 @@ cat_tot = (
 )
 cat_tot["category_resolved"] = cat_tot["category_resolved"].replace({"": "(blank)"})
 
-if len(cat_tot) < 2:
-    top_n = 1
+if cat_tot.empty:
+    st.info("No categories found in the selected mapping.")
+    top_n = 0
 else:
-    top_n = st.slider("Top categories in donut", 2, min(15, len(cat_tot)), value=min(10, len(cat_tot)))
+    # SAFE SLIDER: avoid min==max which crashes Streamlit
+    if len(cat_tot) <= 2:
+        top_n = len(cat_tot)
+        st.caption(f"Showing all {top_n} categories (slider hidden for small counts).")
+    else:
+        top_n = st.slider(
+            "Top categories in donut",
+            min_value=2,
+            max_value=min(15, len(cat_tot)),
+            value=min(10, len(cat_tot)),
+        )
 
-head = cat_tot.head(top_n)
-tail_sum = cat_tot["_spend_eur"].iloc[top_n:].sum()
-donut_df = head.copy()
-if tail_sum > 0:
-    donut_df = pd.concat([head, pd.DataFrame([{"category_resolved": "Other", "_spend_eur": tail_sum}])], ignore_index=True)
+if top_n > 0:
+    head = cat_tot.head(top_n)
+    tail_sum = cat_tot["_spend_eur"].iloc[top_n:].sum()
+    donut_df = head.copy()
+    if tail_sum > 0:
+        donut_df = pd.concat(
+            [head, pd.DataFrame([{"category_resolved": "Other", "_spend_eur": tail_sum}])],
+            ignore_index=True,
+        )
 
-palette = px.colors.qualitative.Set3 if PLOTLY else None
-cat_color_map = {c: palette[i % len(palette)] for i, c in enumerate(cat_tot["category_resolved"])} if PLOTLY else {}
+    palette = px.colors.qualitative.Set3 if PLOTLY else None
+    cat_color_map = {c: palette[i % len(palette)] for i, c in enumerate(cat_tot["category_resolved"])} if PLOTLY else {}
+    st.session_state["cat_color_map"] = cat_color_map  # share with mix chart
 
-if PLOTLY and not donut_df.empty:
-    fig_d = px.pie(
-        donut_df, names="category_resolved", values="_spend_eur",
-        hole=0.5, color="category_resolved", color_discrete_map=cat_color_map
-    )
-    fig_d.update_traces(textposition="inside", textinfo="percent+label")
-    fig_d.update_layout(height=460, margin=dict(l=0,r=0,t=10,b=0),
-                        legend=dict(orientation="h", y=-0.18))
-    st.plotly_chart(fig_d, use_container_width=True)
-else:
-    st.dataframe(donut_df)
+    if PLOTLY:
+        fig_d = px.pie(
+            donut_df, names="category_resolved", values="_spend_eur",
+            hole=0.5, color="category_resolved", color_discrete_map=cat_color_map
+        )
+        fig_d.update_traces(textposition="inside", textinfo="percent+label")
+        fig_d.update_layout(height=460, margin=dict(l=0,r=0,t=10,b=0),
+                            legend=dict(orientation="h", y=-0.18))
+        st.plotly_chart(fig_d, use_container_width=True)
+    else:
+        st.dataframe(donut_df)
 
 st.markdown("<div class='spacer-12'></div>", unsafe_allow_html=True)
 
@@ -289,15 +279,14 @@ if top20_suppliers:
         .rename(columns={"supplier_canon":"Supplier"})
     )
     mix["Supplier"] = mix["Supplier"].replace({"":"(blank)"})
-    # keep exact order as top-20
-    ordered = list(reversed(top20_suppliers))  # large on top (horizontal bar)
+    ordered = list(reversed(top20_suppliers))  # keep same order
     mix["Supplier"] = pd.Categorical(mix["Supplier"], categories=ordered, ordered=True)
 
 if PLOTLY and not mix.empty:
     totals = mix.groupby("Supplier")["_spend_eur"].transform("sum")
     mix["share_pct"] = np.where(totals>0, mix["_spend_eur"]/totals*100, 0)
+    cat_color_map = st.session_state.get("cat_color_map", {})
 
-    # same colors as donut
     fig_m = px.bar(
         mix, x="share_pct", y="Supplier",
         color="category_resolved", orientation="h",
@@ -312,8 +301,10 @@ if PLOTLY and not mix.empty:
         plot_bgcolor="white", paper_bgcolor="white"
     )
     st.plotly_chart(fig_m, use_container_width=True)
+elif top20_suppliers:
+    st.info("Mix chart will appear once plotting is available.")
 else:
-    st.info("Mix chart will appear once the Top-20 suppliers are available.")
+    st.info("Top-20 suppliers not available to build a mix chart.")
 
 st.markdown("<div class='spacer-16'></div>", unsafe_allow_html=True)
 
@@ -344,7 +335,6 @@ with c3:
     st.markdown(f"<div class='dq-pill bad'><div class='dq-lbl'>Blank category</div><div class='dq-val'>{blank_category}</div></div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-# Sample issues table
 issues_mask = pd.Series(False, index=df.index)
 if price_col and price_col in df.columns: issues_mask |= (df[price_col] <= 0) | df[price_col].isna()
 if qty_col and qty_col in df.columns:     issues_mask |= (df[qty_col] <= 0) | df[qty_col].isna()
