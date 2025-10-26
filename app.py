@@ -1,5 +1,6 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer (Polished UI + Data Quality fix)
+# ProcureIQ — Spend Explorer (UI polish 2: uniform KPI, chart spacing/titles,
+# supplier-category mix, cooler DQ badges)
 # ──────────────────────────────────────────────────────────────────────────────
 
 import io, re
@@ -24,6 +25,7 @@ P_ACCENT  = "#6366f1"     # indigo-500
 P_BG_SOFT = "#f8fafc"     # slate-50
 P_TEXT_2  = "#64748b"     # slate-500
 P_BORDER  = "#e5e7eb"     # gray-200
+P_TEXT    = "#111827"     # slate-900
 
 st.markdown(
     f"""
@@ -36,19 +38,37 @@ st.markdown(
         border: 1px solid {P_BORDER};
         border-radius: 18px; padding: 20px 22px; margin-bottom: 10px;
       }}
-      .app-title {{ font-size:32px; font-weight:800; letter-spacing:-.02rem; margin:0; }}
+      .app-title {{ font-size:32px; font-weight:800; letter-spacing:-.02rem; margin:0; color:{P_TEXT}; }}
       .app-sub   {{ color:{P_TEXT_2}; font-size:14px; margin:6px 0 0 0; }}
 
+      /* KPI cards — uniform sizing */
+      .kpi-grid {{ display:grid; grid-template-columns: repeat(5, 1fr); gap:14px; }}
       .kpi-card {{ background:#fff;border:1px solid {P_BORDER};border-radius:14px;padding:16px 18px;
-                  box-shadow:0 1px 3px rgba(0,0,0,.04); height:100%; }}
-      .kpi-title {{ font-size:.95rem;color:{P_TEXT_2};margin-bottom:6px; }}
-      .kpi-value {{ font-size:2rem;font-weight:800;letter-spacing:-.02rem; }}
+                   box-shadow:0 1px 3px rgba(0,0,0,.04); min-height:110px; display:flex; flex-direction:column; justify-content:center; }}
+      .kpi-title {{ font-size:.95rem;color:{P_TEXT_2};margin-bottom:8px; }}
+      .kpi-value-tight {{ font-size:1.8rem;font-weight:800;letter-spacing:-.02rem; white-space:nowrap; }}
+      .kpi-unit {{ font-weight:700; font-size:1.1rem; color:{P_TEXT_2}; margin-left:.3rem; }}
 
-      .tag-ok   {{background:#e7f5e6;color:#166534;border:1px solid #bbf7d0;padding:4px 10px;border-radius:999px;font-size:12px;}}
-      .tag-warn {{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;padding:4px 10px;border-radius:999px;font-size:12px;}}
-      .tag-bad  {{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;padding:4px 10px;border-radius:999px;font-size:12px;}}
+      /* Chart titles spacing */
+      .block-title {{ font-weight:800; font-size:1.05rem; margin:6px 0 10px 4px; color:{P_TEXT}; }}
 
-      .mt-8 {{margin-top:8px;}} .mt-12 {{margin-top:12px;}} .mt-16 {{margin-top:16px;}} .mt-24 {{margin-top:24px;}}
+      /* Data Quality pills */
+      .dq-row {{ display:flex; flex-wrap:wrap; gap:10px; margin:4px 0 12px 0; }}
+      .dq-pill {{
+        display:flex; align-items:center; gap:8px;
+        padding:10px 12px; border-radius:12px; border:1px solid {P_BORDER};
+        background:#fff; color:{P_TEXT};
+        box-shadow:0 1px 2px rgba(0,0,0,.03);
+        min-width:220px; height:48px;
+      }}
+      .dq-ok    {{ border-color:#bbf7d0; background:#ecfdf5; }}
+      .dq-warn  {{ border-color:#fed7aa; background:#fff7ed; }}
+      .dq-bad   {{ border-color:#fecaca; background:#fef2f2; }}
+      .dq-lbl   {{ font-size:13px; color:{P_TEXT_2}; }}
+      .dq-val   {{ font-weight:800; font-size:16px; color:{P_TEXT}; }}
+
+      .mt-8 {{margin-top:8px;}} .mt-12 {{margin-top:12px;}} .mt-16 {{margin-top:16px;}} .mt-20 {{margin-top:20px;}}
+      .mt-24 {{margin-top:24px;}} .mb-0 {{margin-bottom:0;}}
       [data-testid="stSidebar"]{{min-width:360px;max-width:400px;}}
     </style>
     """,
@@ -353,19 +373,47 @@ if page == "Dashboard":
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    k1,k2,k3,k4,k5 = st.columns([1,1,1,1,1])
-    with k1: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Total Spend</div><div class="kpi-value">€ {total_spend/1_000_000:,.1f} M</div></div>', unsafe_allow_html=True)
-    with k2: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Categories</div><div class="kpi-value">{total_categories:,}</div></div>', unsafe_allow_html=True)
-    with k3: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Suppliers</div><div class="kpi-value">{total_suppliers:,}</div></div>', unsafe_allow_html=True)
-    with k4: st.markdown(f'<div class="kpi-card"><div class="kpi-title">Part Numbers</div><div class="kpi-value">{part_count:,}</div></div>', unsafe_allow_html=True)
-    with k5: st.markdown(f'<div class="kpi-card"><div class="kpi-title">PO Lines</div><div class="kpi-value">{total_lines:,}</div></div>', unsafe_allow_html=True)
+    # Uniform KPI row
+    st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Total Spend</div>
+          <div class="kpi-value-tight">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Categories</div>
+          <div class="kpi-value-tight">{total_categories:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Suppliers</div>
+          <div class="kpi-value-tight">{total_suppliers:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">Part Numbers</div>
+          <div class="kpi-value-tight">{part_count:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown(f'''
+        <div class="kpi-card">
+          <div class="kpi-title">PO Lines</div>
+          <div class="kpi-value-tight">{total_lines:,}</div>
+        </div>
+    ''', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="mt-16"></div>', unsafe_allow_html=True)
 
-    # Wider layout: donut (left) vs very wide bars (right)
-    col_left, col_right = st.columns([1.0, 2.0])
+    # Wider layout: donut left (with title), bars far right with spacing
+    lcol, rcol = st.columns([1.0, 2.4], gap="large")
 
-    with col_left:
+    with lcol:
+        st.markdown('<div class="block-title">Spend by Category</div>', unsafe_allow_html=True)
         st.slider("Top categories in donut", 5, min(15, len(cat)), min(10, len(cat)), key="donutN")
         donut_raw = (df.groupby("category_resolved", dropna=False)["_spend_eur"].sum()
                        .reset_index().rename(columns={"category_resolved":"Category","_spend_eur":"spend_eur"}))
@@ -382,14 +430,14 @@ if page == "Dashboard":
                 fig = px.pie(donut_df, names="Category", values="spend_eur",
                              hole=.45, color_discrete_sequence=px.colors.qualitative.Set3)
                 fig.update_traces(textposition="inside", textinfo="percent+label")
-                fig.update_layout(height=560, margin=dict(l=0,r=0,t=10,b=120),
-                                  legend=dict(orientation="h", y=-0.12))
+                fig.update_layout(height=520, margin=dict(l=0,r=0,t=0,b=0),
+                                  legend=dict(orientation="h", y=-0.16))
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.dataframe(donut_df, use_container_width=True)
 
-    with col_right:
-        st.markdown("**Top Suppliers by Spend**")
+    with rcol:
+        st.markdown('<div class="block-title">Top Suppliers by Spend</div>', unsafe_allow_html=True)
         top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20).copy()
         if PLOTLY_AVAILABLE and not top_sup.empty:
             top_sup["Spend_M"] = top_sup["spend_eur"]/1_000_000.0
@@ -401,8 +449,8 @@ if page == "Dashboard":
             )
             fig2.update_traces(textposition="outside", cliponaxis=False)
             fig2.update_layout(
-                height=560,
-                margin=dict(l=10, r=120, t=10, b=10),
+                height=520,
+                margin=dict(l=10, r=140, t=0, b=10),
                 yaxis=dict(categoryorder="total ascending", automargin=True, ticksuffix="  "),
                 xaxis=dict(title="", showgrid=True, zeroline=False),
                 plot_bgcolor="white", paper_bgcolor="white",
@@ -411,7 +459,35 @@ if page == "Dashboard":
         else:
             st.info("No supplier spend to plot yet.")
 
-    # ------------------------ DATA QUALITY (fixed) -----------------------------
+    st.markdown('<div class="mt-20"></div>', unsafe_allow_html=True)
+
+    # --------------------- Supplier × Category mix (Top-20 only) ----------------
+    st.markdown('<div class="block-title">Supplier × Category Mix (Top 20 suppliers)</div>', unsafe_allow_html=True)
+    top20_suppliers = top_sup["Supplier"].tolist() if not sup_tot.empty else []
+    mix = (df[df["supplier"].isin(top20_suppliers)]
+           .groupby(["supplier","category_resolved"])["_spend_eur"].sum().reset_index())
+
+    if PLOTLY_AVAILABLE and not mix.empty:
+        # Preserve supplier order as in top_sup
+        mix["supplier"] = pd.Categorical(mix["supplier"], categories=list(reversed(top20_suppliers)), ordered=True)
+        fig3 = px.bar(
+            mix, x="_spend_eur", y="supplier", color="category_resolved",
+            orientation="h", barmode="stack", barnorm="percent",
+            color_discrete_sequence=px.colors.qualitative.Set3
+        )
+        fig3.update_layout(
+            height=max(500, len(top20_suppliers)*24 + 120),
+            margin=dict(l=10, r=40, t=10, b=10),
+            legend=dict(orientation="h", y=1.13, x=0, title="Category"),
+            xaxis=dict(title="Share (%)", ticksuffix="%", showgrid=True, gridcolor="#f1f5f9"),
+            yaxis=dict(title="Supplier", automargin=True),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+    else:
+        st.info("Mix chart will appear once Top-20 suppliers exist.")
+
+    # ------------------------ DATA QUALITY (polished pills) --------------------
     st.markdown('<div class="mt-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
 
@@ -433,12 +509,19 @@ if page == "Dashboard":
         ("Blank category", int(blank_category.sum())),
     ]
 
-    cols = st.columns(len(dq_pairs))
-    for (label, val), c in zip(dq_pairs, cols):
-        tag = "tag-ok" if val==0 else ("tag-warn" if val<10 else "tag-bad")
-        c.markdown(f'<span class="{tag}">{label}: {val}</span>', unsafe_allow_html=True)
+    # Render pills in one flex row
+    st.markdown('<div class="dq-row">', unsafe_allow_html=True)
+    for label, val in dq_pairs:
+        cls = "dq-ok" if val==0 else ("dq-warn" if val<10 else "dq-bad")
+        st.markdown(f'''
+            <div class="dq-pill {cls}">
+              <div class="dq-lbl">{label}</div>
+              <div class="dq-val">{val}</div>
+            </div>
+        ''', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # Sample problematic rows (defensive: only select columns that exist)
+    # Sample problematic rows (defensive column list)
     issues_mask = (unknown_ccy | missing_price | missing_qty |
                    zero_neg_price | zero_neg_qty | blank_supplier | blank_category)
     sample_cols = [c for c in ["supplier","category_resolved","currency","unit_price","quantity","_spend_eur"]
@@ -467,7 +550,7 @@ else:
     cat = (df.groupby("category_resolved", dropna=False)
            .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
                 suppliers=("supplier", pd.Series.nunique))
-           .reset_index().rename(columns={"category_resolved":"Category","lines":"# PO Lines","suppliers":"# Suppliers"}))
+           .reset_index().rename(columns={"category_resolved":"Category","lines":"# PO Lines","# Suppliers":"# Suppliers"}))
     cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
 
     rngs = [savings_range(c) for c in cat["Category"]]
@@ -493,7 +576,6 @@ with pd.ExcelWriter(buf, engine="openpyxl") as w:
     df.to_excel(w, index=False, sheet_name="Lines")
     cat.to_excel(w, index=False, sheet_name="Categories")
     sup_tot.to_excel(w, index=False, sheet_name="Suppliers")
-    # optional: supplier x category detail
     (df.groupby(["supplier","category_resolved"])["_spend_eur"].sum()
        .reset_index().rename(columns={"supplier":"Supplier","category_resolved":"Category","_spend_eur":"Spend (EUR)"})
        .to_excel(w, index=False, sheet_name="Supplier_x_Category"))
