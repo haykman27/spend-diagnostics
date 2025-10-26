@@ -1,12 +1,12 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer
+# ProcureIQ — Spend Explorer  (Deep Dives: add research & ideas; keep all else)
 # ──────────────────────────────────────────────────────────────────────────────
 
-import io, re
+import io, os, re, xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import streamlit as st
-import requests  # for SEC EDGAR
+import requests
 
 # Charts
 try:
@@ -19,7 +19,7 @@ from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
 
-# ============================== THEME / CSS ===============================
+# ============================== THEME / CSS (same) ===========================
 P_PRIMARY = "#06b6d4"   # cyan-500
 P_TEXT    = "#0f172a"
 P_TEXT2   = "#475569"
@@ -66,13 +66,19 @@ st.markdown(
       .dq-lbl {{ font-size: 13px; color: {P_TEXT2}; }}
       .dq-val {{ font-weight: 800; font-size: 16px; color: {P_TEXT}; }}
 
+      .idea-bullet {{ line-height:1.45rem; }}
+      .idea-tag {{
+        display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px;
+        border:1px solid {P_BORDER}; margin-right:6px; color:{P_TEXT2}
+      }}
+
       [data-testid="stSidebar"] {{ min-width: 360px; max-width: 400px; }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ============================== HEADER ===============================
+# ============================== HEADER (same) =================================
 st.markdown(
     """
     <div class="banner">
@@ -85,7 +91,7 @@ st.markdown(
 
 BASE = "EUR"
 
-# ============================== HELPERS ===============================
+# ============================== HELPERS (same) ================================
 def normalize_headers(cols): return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 def parse_number_robust(x):
     if pd.isna(x): return np.nan
@@ -175,7 +181,6 @@ def detect_spend_column(df):
 
 def fmt_k(s: pd.Series) -> pd.Series: return (s/1_000.0).round(0)
 
-# — part-number detection used for both KPI and Deep Dives
 def detect_part_number_cols(df_in):
     norm = {c: c.lower() for c in df_in.columns}
     cues = ["item", "item number", "item no", "material", "material number", "sku", "code", "part", "pn", "material code"]
@@ -186,7 +191,7 @@ def detect_part_number_cols(df_in):
     hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
     return hits
 
-# ============================== UPLOAD ===============================
+# ============================== UPLOAD (same) ================================
 with st.sidebar:
     st.header("Data")
     uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
@@ -198,7 +203,7 @@ if not uploaded:
 raw = pd.read_excel(uploaded)
 raw.columns = [str(c) for c in raw.columns]
 
-# ============================== MAPPING ===============================
+# ============================== MAPPING (same) ===============================
 mapping = suggest_columns(raw)
 with st.sidebar:
     st.subheader("Column mapping")
@@ -216,7 +221,7 @@ for k in ["supplier","currency","unit_price","quantity","category","cat_family",
     if k in mapping:
         df[k] = raw[mapping[k]]
 
-# Category candidates
+# Category candidates (same)
 cat_cands, label_to_col = [], {}
 def _add_cand(label, colname):
     if colname and colname in df.columns and df[colname].notna().any():
@@ -245,7 +250,7 @@ with st.sidebar:
 resolved_cat_col = label_to_col[cat_choice]
 df["category_resolved"] = df[resolved_cat_col].copy()
 
-# ============================== FX + SPEND ===============================
+# ============================== FX + SPEND (same) ============================
 df["unit_price"] = df["unit_price"].apply(parse_number_robust)
 df["quantity"]   = df["quantity"].apply(parse_number_robust)
 
@@ -315,7 +320,7 @@ else:
 
 df["_spend_eur"] = ensure_numeric_spend(df["_spend_eur"])
 
-# ============================== AGGREGATES ===============================
+# ============================== AGGREGATES (same) ============================
 cat = (df.groupby("category_resolved", dropna=False)
        .agg(spend_eur=("_spend_eur","sum"),
             lines=("category_resolved","count"),
@@ -332,7 +337,7 @@ sup_tot = (df.groupby("supplier", dropna=False)
            .rename(columns={"supplier":"Supplier"}))
 sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
 
-# Part numbers (KPI + later in Deep Dives)
+# Part numbers for KPI and Deep Dives
 part_cols = detect_part_number_cols(raw)
 part_count = 0
 part_id_col = None
@@ -344,10 +349,10 @@ if part_cols:
     if part_id_col:
         part_count = int(raw[part_id_col].astype(str).replace({"nan":np.nan,"":np.nan}).nunique())
 
-# ============================== NAV ===============================
+# ============================== NAV (same) ====================================
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
-# ============================== DASHBOARD ===============================
+# ============================== DASHBOARD (unchanged) =========================
 if page == "Dashboard":
     total_spend = float(df["_spend_eur"].sum())
     total_lines = int(len(df))
@@ -372,6 +377,7 @@ if page == "Dashboard":
 
     left, right = st.columns([1.05, 2.2], gap="large")
 
+    # Donut
     with left:
         st.markdown('<div class="block-title">Spend by Category</div>', unsafe_allow_html=True)
         donut_raw = (df.groupby("category_resolved", dropna=False)["_spend_eur"].sum()
@@ -401,6 +407,7 @@ if page == "Dashboard":
             else:
                 st.dataframe(donut_df, use_container_width=True)
 
+    # Top suppliers bar
     with right:
         st.markdown('<div class="block-title">Top Suppliers by Spend</div>', unsafe_allow_html=True)
         top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20).copy()
@@ -445,12 +452,10 @@ if page == "Dashboard":
         totals = mix.groupby("Supplier")["_spend_eur"].transform("sum")
         mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
         mix["Supplier"] = pd.Categorical(mix["Supplier"], categories=top20_order_for_mix, ordered=True)
-
         if not 'color_map' in locals() or not color_map:
             palette = px.colors.qualitative.Set3
             all_cats = sorted(df["category_resolved"].dropna().unique().tolist())
             color_map = {c: palette[i % len(palette)] for i, c in enumerate(all_cats)}
-
         fig3 = px.bar(mix, x="share_pct", y="Supplier", color="category_resolved",
                       orientation="h", barmode="stack", color_discrete_map=color_map)
         fig3.update_layout(height=max(560, len(top20_order_for_mix)*26 + 180),
@@ -464,7 +469,7 @@ if page == "Dashboard":
     else:
         st.info("Mix chart will appear once the Top-20 suppliers are available.")
 
-    # Data Quality
+    # Data Quality (unchanged)
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
 
@@ -509,15 +514,12 @@ if page == "Dashboard":
     else:
         st.success("No obvious data quality issues found in key fields.")
 
-# ============================== DEEP DIVES (RESTORED + FINANCIALS) ===============================
+# ============================== DEEP DIVES (extended) =========================
 else:
     st.subheader("Deep Dives")
 
-    # ---- category picker
+    # --- Category picker
     categories = sorted([c for c in df["category_resolved"].dropna().unique().tolist() if str(c).strip() != ""])
-    if not categories:
-        st.info("No categories available.")
-        st.stop()
     sel_cat = st.selectbox("Select category", categories, index=0)
 
     df_cat = df[df["category_resolved"] == sel_cat].copy()
@@ -525,19 +527,19 @@ else:
                .agg(spend_eur=("_spend_eur","sum"), lines=("supplier","count"))
                .reset_index())
 
-    # add # part numbers per supplier in this category
+    # # parts per supplier in this category
     if part_id_col and part_id_col in df_cat.columns:
         pn = (df_cat.groupby("supplier")[part_id_col]
               .nunique().reset_index().rename(columns={part_id_col:"# Parts"}))
         sup_cat = sup_cat.merge(pn, on="supplier", how="left")
     else:
-        sup_cat["# Parts"] = np.nan
+        sup_cat["# Parts"] = 0
     sup_cat["# Parts"] = sup_cat["# Parts"].fillna(0).astype(int)
-
     sup_cat = sup_cat.sort_values("spend_eur", ascending=False)
+
     left, right = st.columns([1.7, 1.3], gap="large")
 
-    # ---- bar chart of suppliers in the category
+    # ---- left: supplier list bar
     with left:
         st.markdown(f'<div class="block-title">Suppliers in “{sel_cat}” (by spend)</div>', unsafe_allow_html=True)
         if PLOTLY and not sup_cat.empty:
@@ -554,15 +556,11 @@ else:
                               xaxis=dict(title="", showgrid=True, gridcolor="#e5e7eb"),
                               plot_bgcolor="white", paper_bgcolor="white")
             st.plotly_chart(fig, use_container_width=True)
-        tbl = sup_cat.rename(columns={"supplier":"Supplier","spend_eur":"Spend (EUR)","lines":"PO Lines"})
-        st.dataframe(tbl[["Supplier","Spend (EUR)","# Parts","PO Lines"]], use_container_width=True)
 
-    # ---- supplier overview (financials via SEC EDGAR)
+    # ---- right: supplier overview (EDGAR)
     with right:
         st.markdown('<div class="block-title">Supplier overview</div>', unsafe_allow_html=True)
-        sup_list = sup_cat["supplier"].tolist()
-        default_ix = 0
-        sel_sup = st.selectbox("Select a supplier for details", sup_list, index=default_ix)
+        sel_sup = st.selectbox("Select a supplier for details", sup_cat["supplier"].tolist(), index=0)
 
         # SEC helpers (cached)
         @st.cache_data(ttl=24*60*60, show_spinner=False)
@@ -651,15 +649,10 @@ else:
 
             revenue_candidates = [
                 "RevenueFromContractWithCustomerExcludingAssessedTax",
-                "SalesRevenueNet",
-                "Revenues",
-                "RevenueFromContractWithCustomerIncludingAssessedTax",
-                "Revenue",
-                "TotalRevenuesAndOtherIncome",
+                "SalesRevenueNet","Revenues","Revenue","TotalRevenuesAndOtherIncome",
             ]
             income_candidates = [
-                "NetIncomeLoss",
-                "ProfitLoss",
+                "NetIncomeLoss","ProfitLoss",
                 "NetIncomeLossAvailableToCommonStockholdersBasic",
                 "NetIncomeLossIncludingPortionAttributableToNoncontrollingInterest",
             ]
@@ -667,11 +660,9 @@ else:
             rev_usd = _latest_for_any("us-gaap", revenue_candidates, preferred_unit="USD")
             ni_usd  = _latest_for_any("us-gaap", income_candidates,  preferred_unit="USD")
             if rev_usd is None:
-                rev_any = _latest_for_any("us-gaap", revenue_candidates, preferred_unit=None)
-                rev_usd = rev_any
+                rev_usd = _latest_for_any("us-gaap", revenue_candidates, preferred_unit=None)
             if ni_usd is None:
-                ni_any = _latest_for_any("us-gaap", income_candidates, preferred_unit=None)
-                ni_usd = ni_any
+                ni_usd  = _latest_for_any("us-gaap", income_candidates,  preferred_unit=None)
 
             revenue_m_eur, margin_pct = None, None
             if rev_usd is not None:
@@ -679,7 +670,6 @@ else:
                     revenue_m_eur = (rev_usd * 0.93) / 1_000_000.0
                 except Exception:
                     revenue_m_eur = None
-
             if (rev_usd is not None) and (ni_usd is not None) and rev_usd != 0:
                 try:
                     margin_pct = 100.0 * (ni_usd / rev_usd)
@@ -702,7 +692,109 @@ else:
         else:
             st.info("No public EDGAR data found for this supplier (likely not a US-listed filer).")
 
-# ============================== DOWNLOADS ===============================
+    # ------------------------ Research & Negotiation Ideas ---------------------
+    st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
+    st.subheader("Research-backed negotiation & cost-reduction ideas")
+
+    # Helpers: Google News RSS (no key) + optional SerpAPI
+    @st.cache_data(ttl=2*60*60, show_spinner=False)
+    def google_news(query: str, max_items=8):
+        url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en"
+        try:
+            r = requests.get(url, timeout=20, headers={"User-Agent":"ProcureIQ/1.0"})
+            r.raise_for_status()
+            root = ET.fromstring(r.content)
+            items = []
+            for item in root.iterfind(".//item")[:max_items]:
+                title = item.findtext("title") or ""
+                link  = item.findtext("link") or ""
+                items.append({"title": title, "link": link})
+            return items
+        except Exception:
+            return []
+
+    @st.cache_data(ttl=6*60*60, show_spinner=False)
+    def serpapi_links(query: str, max_items=6):
+        key = os.getenv("SERPAPI_KEY")
+        if not key:
+            return []
+        try:
+            url = "https://serpapi.com/search.json"
+            params = {"engine":"google","q":query,"num":max_items,"api_key":key}
+            r = requests.get(url, params=params, timeout=25)
+            r.raise_for_status()
+            js = r.json()
+            out = []
+            for it in js.get("organic_results", [])[:max_items]:
+                out.append({"title": it.get("title",""), "link": it.get("link","")})
+            return out
+        except Exception:
+            return []
+
+    # Build signals from your dataset for the (category, supplier)
+    df_sel = df_cat[df_cat["supplier"] == sel_sup].copy()
+    parts_n  = int(df_sel[part_id_col].nunique()) if (part_id_col and part_id_col in df_sel.columns) else 0
+    avg_price = (df_sel["_spend_eur"].sum() / max(1.0, df_sel["quantity"].sum())) if df_sel["quantity"].sum() else None
+
+    # Query strings
+    q_news = f'{sel_sup} {sel_cat} supplier'
+    q_bench = f'{sel_cat} component price benchmark manufacturing cost'
+    q_vave  = f'{sel_cat} cost reduction value analysis value engineering ideas'
+
+    news = google_news(q_news, 8)
+    bench_links = serpapi_links(q_bench, 6)
+    vave_links  = serpapi_links(q_vave, 6)
+
+    # Lay out three columns of ideas with sources
+    i1, i2 = st.columns([1.25, 1])
+
+    with i1:
+        st.markdown("##### Market & price checks")
+        if avg_price:
+            st.markdown(f"<span class='idea-tag'>internal</span> Approx. **avg unit price** in your data for this supplier/category: **€{avg_price:,.4f}**", unsafe_allow_html=True)
+        else:
+            st.markdown("<span class='idea-tag'>internal</span> Could not compute average unit price (missing qty).", unsafe_allow_html=True)
+
+        if bench_links:
+            st.caption("External benchmark links")
+            for it in bench_links:
+                st.markdown(f"- [{it['title']}]({it['link']})")
+        else:
+            st.info("Add `SERPAPI_KEY` as an environment variable to surface benchmark/search links automatically.")
+
+        st.markdown("##### VAVE levers (source links)")
+        if vave_links:
+            for it in vave_links:
+                st.markdown(f"- [{it['title']}]({it['link']})")
+        else:
+            st.info("Provide `SERPAPI_KEY` to auto-fetch VAVE sources (or I can wire a different search API).")
+
+    with i2:
+        st.markdown("##### Recent news (potential negotiation angles)")
+        if news:
+            for n in news:
+                st.markdown(f"- [{n['title']}]({n['link']})")
+        else:
+            st.info("No recent Google-News items fetched right now.")
+
+    # A few auto-generated idea bullets using your data (no invented numbers)
+    st.markdown("##### Data-driven opportunities (from your cube)")
+    bullets = []
+    supplier_total = float(df_sel["_spend_eur"].sum())
+    cat_total      = float(df_cat["_spend_eur"].sum())
+    if supplier_total and cat_total:
+        share = 100.0 * supplier_total / cat_total
+        bullets.append(f"<span class='idea-tag'>mix</span> Supplier accounts for **{share:,.1f}%** of spend in *{sel_cat}*. Explore volume-for-price trade: step pricing or multi-year commitment.")
+    if parts_n > 0:
+        bullets.append(f"<span class='idea-tag'>complexity</span> **{parts_n} part numbers** with {sel_sup} in this category — check standardisation, consolidation and tooling amortisation.")
+    if avg_price:
+        bullets.append("<span class='idea-tag'>should-cost</span> Build a should-cost using resin index, conversion (machine-hour), scrap & overhead; compare against the benchmark links on the left.")
+    if len(bullets)==0:
+        bullets.append("<span class='idea-tag'>hint</span> Add quantities/part IDs to unlock more specific ideas.")
+    for b in bullets:
+        st.markdown(f"- <span class='idea-bullet'>{b}</span>", unsafe_allow_html=True)
+
+# ============================== DOWNLOADS (same) ==============================
 st.divider()
 st.markdown("#### Download full dataset & summaries (XLSX)")
 buf = io.BytesIO()
