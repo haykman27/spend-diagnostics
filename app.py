@@ -5,6 +5,7 @@
 # - Supplier×Category Mix (Top-20) with same order & colors as donut
 # - Data Quality pills + sample
 # - FX conversion (ECB); robust parsing; auto spend source validation
+# - Part Numbers detection: robust (excludes category/family columns)
 # ──────────────────────────────────────────────────────────────────────────────
 
 import io, re
@@ -188,6 +189,7 @@ def detect_spend_column(df):
     return max(med, key=med.get)
 
 def fmt_k(s: pd.Series) -> pd.Series: return (s/1_000.0).round(0)
+
 def detect_part_number_cols(df):
     norm = {c: c.lower() for c in df.columns}
     cues = ["item", "item number", "item no", "material", "material number", "sku", "code", "part", "pn", "material code"]
@@ -195,7 +197,7 @@ def detect_part_number_cols(df):
     for c, n in norm.items():
         if any(k in n for k in cues):
             hits.append(c)
-    hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
+    # keep natural order
     return hits
 
 # ============================== UPLOAD ========================================
@@ -344,15 +346,41 @@ sup_tot = (df.groupby("supplier", dropna=False)
            .rename(columns={"supplier":"Supplier"}))
 sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
 
-# KPI: part numbers
-part_cols = []
-for c in raw.columns:
-    lc = c.lower()
-    if any(k in lc for k in ["item", "material", "sku", "code", "part", "pn"]):
-        part_cols.append(c)
-part_cols = [c for c in part_cols if raw[c].notna().sum() > 0]
-chosen_part = part_cols[0] if part_cols else None
-part_count = int(raw[chosen_part].astype(str).replace({"nan":np.nan}).nunique()) if chosen_part else 0
+# >>> Part numbers detection (robust, excludes category/family)
+def pick_best_part_column(raw_df, resolved_cat, mapping):
+    excludes = {resolved_cat}
+    for k in ["cat_family","cat_group"]:
+        if mapping.get(k) in raw_df.columns:
+            excludes.add(mapping[k])
+
+    candidates = detect_part_number_cols(raw_df)
+    best_col, best_n = None, 0
+
+    for c in candidates:
+        lc = c.lower()
+        # filter out obvious category-like candidates
+        if c in excludes:            continue
+        if "family" in lc or "group" in lc:  continue
+        if lc.strip() == "category":  continue
+
+        s = raw_df[c].astype(str).str.strip()
+        s = s.replace({"": np.nan, "nan": np.nan, "None": np.nan})
+        nun = s.nunique(dropna=True)
+
+        # basic PN heuristics: should often include digits
+        frac_has_digit = (s.str.contains(r"\d", regex=True, na=False).sum()) / max(1, len(s))
+        # penalize very low-cardinality "codes"
+        if nun <= max(30, int(0.02 * len(raw_df))):  # at least 2% of rows or 30
+            continue
+        if frac_has_digit < 0.30:
+            continue
+
+        if nun > best_n:
+            best_col, best_n = c, nun
+
+    return best_col, int(best_n)
+
+best_part_col, part_count = pick_best_part_column(raw, resolved_cat_col, mapping)
 
 # Navigation
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
@@ -364,7 +392,7 @@ if page == "Dashboard":
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    # KPI cards in one row (reliable)
+    # KPI cards in one row
     c1, c2, c3, c4, c5 = st.columns(5, gap="medium")
     with c1:
         st.markdown(f'''
@@ -399,7 +427,7 @@ if page == "Dashboard":
 
     st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
 
-    # Donut left, bar right (more whitespace between)
+    # Donut left, bar right
     left, right = st.columns([1.05, 2.2], gap="large")
 
     # -------- Left: donut
@@ -423,7 +451,7 @@ if page == "Dashboard":
                 [topN_df, pd.DataFrame([{"Category":"Other","spend_eur":other}]) if other>0 else pd.DataFrame()],
                 ignore_index=True
             )
-            # establish a stable color map for categories (used also in mix)
+            # stable color map for categories (used also in mix)
             palette = px.colors.qualitative.Set3 if PLOTLY else None
             cats_in_palette = donut_df["Category"].tolist()
             color_map = {c: palette[i % len(palette)] for i, c in enumerate(cats_in_palette)} if PLOTLY else {}
@@ -511,7 +539,7 @@ if page == "Dashboard":
     else:
         st.info("Mix chart will appear once the Top-20 suppliers are available.")
 
-    # -------- Data Quality (unchanged)
+    # -------- Data Quality
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
 
