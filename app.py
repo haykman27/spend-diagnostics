@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer  (web-fetched supplier financials, no CSV needed)
+# ProcureIQ — Spend Explorer  (web-fetched supplier financials + news levers)
 # ──────────────────────────────────────────────────────────────────────────────
 
 import io, re, time, html
@@ -57,7 +57,7 @@ st.markdown(
       .kpi-value {{ font-size:1.8rem;font-weight:800;letter-spacing:-.02rem; white-space:nowrap; }}
       .kpi-unit  {{ font-weight:700; font-size:1.1rem; color:{P_TEXT2}; margin-left:.3rem; }}
 
-      .block-title {{ font-weight:800; font-size:1.05rem; margin:6px 0 8px 6px; color:{P_TEXT}; }}
+      .block-title {{ font-weight:800; font-size:1.05rem; margin:6px 0 8px 6px; color: {P_TEXT}; }}
       .spacer-16 {{ margin-top:16px; }}
       .spacer-24 {{ margin-top:24px; }}
 
@@ -119,8 +119,14 @@ def ensure_numeric_spend(s: pd.Series) -> pd.Series:
         s = pd.to_numeric(s, errors="coerce")
     return s.fillna(0.0).astype(float)
 
-CURRENCY_SYMBOL_MAP = {"€":"EUR","$":"USD","£":"GBP","¥":"JPY","₩":"KRW","₹":"INR","₺":"TRY","R$":"BRL","S$":"SGD","SEK":"SEK","NOK":"NOK","DKK":"DKK"}
-ISO_3 = {"EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD","CAD","MXN","BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS","VND","NGN","RUB"}
+CURRENCY_SYMBOL_MAP = {
+    "€":"EUR","$":"USD","£":"GBP","¥":"JPY","₩":"KRW","₹":"INR","₺":"TRY","R$":"BRL","S$":"SGD",
+    "SEK":"SEK","NOK":"NOK","DKK":"DKK"
+}
+ISO_3 = {
+    "EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD","CAD",
+    "MXN","BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS","VND","NGN","RUB"
+}
 
 def detect_iso_from_text(text):
     if text is None or (isinstance(text,float) and np.isnan(text)): return None
@@ -134,9 +140,8 @@ def detect_iso_from_text(text):
     for k,v in alias.items():
         if k in s: return v
     for sym in sorted(CURRENCY_SYMBOL_MAP, key=len, reverse=True):
-        if sym in s: 
+        if sym in s:
             return CURRENCY_SYMBOL_MAP[sym]
-    # also try common words like "billion SEK"
     if "SEK" in s: return "SEK"
     if "NOK" in s: return "NOK"
     if "DKK" in s: return "DKK"
@@ -604,21 +609,13 @@ else:
 
     col1, col2, col3 = st.columns([1.3, 1.0, 1.0], gap="large")
 
-    # ===== Web fetcher (no APIs) ============================================
+    # ===== Web financial fetcher ============================================
     @st.cache_data(ttl=60*60, show_spinner=True)
     def fetch_financials_from_web(supplier_name: str, fx_tbl: pd.DataFrame):
-        """
-        Try several public sources via DuckDuckGo HTML results (no keys).
-        Returns dict: {'revenue_eur_mil': float or None, 'margin_pct': float or None,
-                       'year': int or None, 'source': str or ''}
-        """
         if not HAVE_WEB:
             return {"revenue_eur_mil": None, "margin_pct": None, "year": None, "source": ""}
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36"
-        }
-
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36"}
         def _get(url):
             try:
                 r = requests.get(url, headers=headers, timeout=12)
@@ -629,7 +626,6 @@ else:
             return ""
 
         def _search_ddg(q):
-            # DuckDuckGo HTML endpoint
             url = "https://duckduckgo.com/html/?q=" + requests.utils.quote(q)
             html_txt = _get(url)
             if not html_txt: return []
@@ -648,7 +644,6 @@ else:
             except Exception:
                 return 1.0
 
-        # heuristics: prefer companiesmarketcap or macrotrends first
         queries = [
             f'{supplier_name} revenue',
             f'site:companiesmarketcap.com {supplier_name} revenue',
@@ -658,7 +653,6 @@ else:
         for q in queries:
             candidate_urls.extend(_search_ddg(q))
 
-        # de-dup & keep only useful domains
         keep_domains = ("companiesmarketcap.com", "macrotrends.net", "annualreports.com", "investors.", "ir.")
         cleaned = []
         seen = set()
@@ -667,13 +661,9 @@ else:
                 if u not in seen:
                     cleaned.append(u); seen.add(u)
 
-        # regex helpers
-        money_pat = re.compile(
-            r'(?P<cur>\$|€|£|SEK|NOK|DKK)\s?(?P<num>\d[\d\.,]*)\s*(?P<scale>Billion|Million|bn|mn|billion|million)?',
-            re.I
-        )
+        money_pat = re.compile(r'(?P<cur>\$|€|£|SEK|NOK|DKK)\s?(?P<num>\d[\d\.,]*)\s*(?P<scale>Billion|Million|bn|mn|billion|million)?', re.I)
         margin_pat = re.compile(r'(net\s*(profit)?\s*margin[^0-9%]{0,20}|margin[^0-9%]{0,10})\s(?P<mrg>\d{1,2}\.?\d*)\s?%', re.I)
-        year_pat = re.compile(r'(FY|Year|for\s+the\s+year\s+)\s?(?P<yr>20\d{2})', re.I)
+        year_pat   = re.compile(r'(FY|Year|for\s+the\s+year\s+)\s?(?P<yr>20\d{2})', re.I)
 
         best = {"revenue_eur_mil": None, "margin_pct": None, "year": None, "source": ""}
 
@@ -684,15 +674,10 @@ else:
             text = BeautifulSoup(html_txt, "html.parser").get_text(" ", strip=True)
             text = html.unescape(text)
 
-            # Try to find revenue-like statement near the word "revenue"
             if "revenue" in text.lower():
-                # choose the first money match after 'revenue'
                 idx = text.lower().find("revenue")
                 window = text[idx: idx+600] if idx >= 0 else text[:600]
-                m = money_pat.search(window)
-                if not m:
-                    m = money_pat.search(text[:800])  # fallback anywhere
-
+                m = money_pat.search(window) or money_pat.search(text[:800])
                 if m:
                     cur = m.group("cur").upper()
                     num = m.group("num")
@@ -700,49 +685,138 @@ else:
                     try:
                         val = float(num.replace(",","").replace(".","", num.count(".")-1))
                     except Exception:
-                        # if multiple dots, keep last decimal
-                        try:
-                            val = float(num.replace(",", ""))
-                        except Exception:
-                            val = None
-
+                        try: val = float(num.replace(",", "")); 
+                        except Exception: val = None
                     if val is not None:
-                        # normalize scale
                         if scale in ("billion","bn","b"):
                             val_mil = val * 1000.0
                         elif scale in ("million","mn","m"):
                             val_mil = val
                         else:
-                            # if no scale but huge numbers (e.g., 3.41), assume billion on CompaniesMarketCap cards
-                            val_mil = val * 1000.0 if val < 50 else val  # crude but pragmatic
+                            val_mil = val * 1000.0 if val < 50 else val
                         iso = detect_iso_from_text(cur)
                         eur_mil = val_mil * _fx_rate(iso)
                         best["revenue_eur_mil"] = float(f"{eur_mil:.2f}")
                         best["source"] = url
 
-            # Margin
             mm = margin_pat.search(text)
             if mm:
-                try:
-                    best["margin_pct"] = float(mm.group("mrg"))
-                except Exception:
-                    pass
+                try: best["margin_pct"] = float(mm.group("mrg"))
+                except Exception: pass
 
-            # Year
             yy = year_pat.search(text)
             if yy:
-                try:
-                    best["year"] = int(yy.group("yr"))
-                except Exception:
-                    pass
+                try: best["year"] = int(yy.group("yr"))
+                except Exception: pass
 
-            # stop when we have revenue
             if best["revenue_eur_mil"] is not None:
                 break
 
         return best
 
-    # Left column: action to fetch
+    # ===== News & negotiation signals =======================================
+    @st.cache_data(ttl=2*60*60, show_spinner=False)
+    def fetch_news_headlines(supplier: str, category: str):
+        if not HAVE_WEB:
+            return []
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36"}
+        def _get(url):
+            try:
+                r = requests.get(url, headers=headers, timeout=12)
+                if r.status_code == 200 and r.text:
+                    return r.text
+            except Exception:
+                pass
+            return ""
+
+        def _search_ddg_news(q):
+            url = "https://duckduckgo.com/html/?q=" + requests.utils.quote(q)
+            txt = _get(url)
+            if not txt: return []
+            soup = BeautifulSoup(txt, "html.parser")
+            out = []
+            for res in soup.select(".result"):
+                a = res.select_one("a.result__a")
+                if not a: continue
+                href = a.get("href", "")
+                title = a.get_text(" ", strip=True)
+                snip = res.select_one(".result__snippet")
+                snippet = snip.get_text(" ", strip=True) if snip else ""
+                if href.startswith("http"):
+                    out.append({"title": title, "url": href, "snippet": snippet})
+            return out
+
+        queries = [
+            f'{supplier} {category} price',
+            f'{supplier} {category} capacity',
+            f'{supplier} earnings',
+            f'{category} raw material prices',
+            f'{supplier} strike OR shutdown OR acquisition',
+        ]
+        items = []
+        for q in queries:
+            items.extend(_search_ddg_news(q))
+        # prefer reputable domains
+        good = ("reuters.com","ft.com","bloomberg.com","wsj.com","marketwatch.com","seekingalpha.com","yahoo.com","investors.","ir.")
+        dedup, seen = [], set()
+        for it in items:
+            u = it["url"]
+            dom = re.sub(r"^https?://(www\.)?","",u).split("/")[0]
+            key = (it["title"][:80], dom)
+            if key in seen: continue
+            if any(g in u for g in good):
+                dedup.append(it); seen.add(key)
+        return dedup[:8]
+
+    def craft_levers(category: str, supplier_row: pd.Series, headlines: list):
+        levers = []
+        share = 0.0
+        if supplier_row is not None:
+            cat_total = float(agg["spend_eur"].sum())
+            sup_sp = float(supplier_row["spend_eur"])
+            share = 0.0 if cat_total==0 else sup_sp/cat_total
+            parts = int(supplier_row["# PO Lines"])
+
+        # generic from data shape
+        if share >= 0.30: levers.append("High dependence (>30% category share): prepare dual-source scenario and staged re-allocation.")
+        elif share >= 0.15: levers.append("Moderate dependence: competitive RFQ with peer benchmarks; request MLAs with step-down pricing.")
+        if parts >= 100: levers.append("Large line count: standardize specs & tolerance bands; bundle RFQs to capture scale discounts.")
+
+        # category specific
+        cat = (category or "").lower()
+        if any(k in cat for k in ["plast","poly","rubber"]):
+            levers += [
+                "Resin index clauses (PE/PP/PA) with pass-through & downside sharing; audit conversion & overhead build-ups.",
+                "VA/VE: part consolidation, gate count reduction, cycle-time optimization; family tools where feasible.",
+                "Check market spot quotes for equivalent resin grades and regional arbitrage (EU vs. NA vs. APAC)."
+            ]
+        if any(k in cat for k in ["aluminium","aluminum","steel","metal","bracket","tube"]):
+            levers += [
+                "Link pricing to LME/steel indexes with transparent alloy surcharges; back-test vs. last 12 months.",
+                "Process route review (extrusion vs. machining vs. stamping) and scrap/yield analytics to reclaim value.",
+                "Nearshoring quote to offset freight/energy; explore die sharing or common profiles."
+            )
+        if "tubes" in cat:
+            levers.append("Straight vs. bended tubes: bend radius/tolerance simplification; welding vs. forming trade-off study.")
+
+        # news-driven nudges
+        text = " ".join([(h.get("title","")+" "+h.get("snippet","")) for h in (headlines or [])]).lower()
+        if any(k in text for k in ["acquisition","merger","m&a","takeover"]):
+            levers.append("Recent M&A: leverage synergy/overlap to seek price harmonization and new-parent rebate.")
+        if any(k in text for k in ["capacity","expansion","new plant","overcapacity"]):
+            levers.append("Capacity additions reported: push for spot/introductory pricing citing supply loosening.")
+        if any(k in text for k in ["shutdown","strike","fire","closure"]):
+            levers.append("Risk event detected: dual-source contingency and safety-stock renegotiation (supplier-funded).")
+        if any(k in text for k in ["price down","decline","softening","deflation","drop in prices","lower prices"]):
+            levers.append("Market softening: request index-linked reductions and immediate list-price rollbacks.")
+
+        # keep unique, readable bullets
+        out = []
+        for L in levers:
+            if L not in out: out.append(L)
+        return out[:8]
+
+    # ---- UI: Financials + stability + override (unchanged from last step) ---
     with col1:
         st.caption("Financials (auto web fetch — no APIs)")
         if not HAVE_WEB:
@@ -752,7 +826,6 @@ else:
         if fetch_clicked and HAVE_WEB:
             fetched = fetch_financials_from_web(sel_supplier, load_latest_ecb())
             st.session_state[f"webfin_{sel_supplier.lower()}"] = fetched
-        # show last cached if exists
         cached = st.session_state.get(f"webfin_{sel_supplier.lower()}")
         if fetched is None and cached is not None:
             fetched = cached
@@ -769,12 +842,12 @@ else:
         else:
             st.info("Click **Fetch from web** to pull revenue/margin (tries CompaniesMarketCap, Macrotrends, investor/IR pages).")
 
-    # Middle: stability signal (unchanged heuristic)
     with col2:
-        sup_spend = float(agg.loc[agg["Supplier"] == sel_supplier, "spend_eur"].iloc[0])
+        sup_row = agg.loc[agg["Supplier"] == sel_supplier].iloc[0] if sel_supplier in agg["Supplier"].values else None
+        sup_spend = float(sup_row["spend_eur"]) if sup_row is not None else 0.0
         cat_spend = float(agg["spend_eur"].sum())
         share = 0.0 if cat_spend == 0 else sup_spend / cat_spend
-        lines = int(agg.loc[agg["Supplier"] == sel_supplier, "# PO Lines"].iloc[0])
+        lines = int(sup_row["# PO Lines"]) if sup_row is not None else 0
 
         if share >= 0.30 or lines <= 3:
             stability = "Caution: high dependence (consider dual-sourcing / re-balancing)"
@@ -786,7 +859,6 @@ else:
         st.metric("Supplier share in this category", f"{share*100:,.1f}%")
         st.caption(stability)
 
-    # Right: inline override (kept as a safety net)
     with col3:
         st.caption("Manual override (optional)")
         cA, cB = st.columns(2)
@@ -800,6 +872,27 @@ else:
                 "source": "",
             }
             st.success("Override applied.")
+
+    # ---- NEW: Headlines + Negotiation levers --------------------------------
+    st.markdown("### Negotiation & cost-reduction levers (auto-researched)")
+    news = fetch_news_headlines(sel_supplier, cat_selected) if HAVE_WEB else []
+    bullets = craft_levers(cat_selected, sup_row if sel_supplier in agg["Supplier"].values else None, news)
+
+    if bullets:
+        for b in bullets:
+            st.write(f"- {b}")
+    else:
+        st.write("- Standard RFQ with index-linked clauses; - VA/VE workshop; - Rebalance share to increase competition.")
+
+    if news:
+        with st.expander("Recent market & supplier headlines"):
+            for it in news:
+                title = it["title"]
+                url = it["url"]
+                snippet = it.get("snippet","")
+                st.markdown(f"- [{title}]({url})  \n  <span style='color:#64748b'>{snippet}</span>", unsafe_allow_html=True)
+    else:
+        st.caption("No headlines fetched yet (or blocked by site); try again in a moment.")
 
 # ============================== DOWNLOADS =====================================
 st.divider()
