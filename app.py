@@ -795,7 +795,7 @@ else:
                 "Link pricing to LME/steel indexes with transparent alloy surcharges; back-test vs. last 12 months.",
                 "Process route review (extrusion vs. machining vs. stamping) and scrap/yield analytics to reclaim value.",
                 "Nearshoring quote to offset freight/energy; explore die sharing or common profiles."
-            )
+            ]
         if "tubes" in cat:
             levers.append("Straight vs. bended tubes: bend radius/tolerance simplification; welding vs. forming trade-off study.")
 
