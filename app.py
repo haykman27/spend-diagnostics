@@ -1,8 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer  (Deep Dives: add research & ideas; keep all else)
+# ProcureIQ — Spend Explorer (No-API keys; Yahoo Finance + EDGAR + Google News)
 # ──────────────────────────────────────────────────────────────────────────────
 
-import io, os, re, xml.etree.ElementTree as ET
+import io, os, re, math, xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -15,15 +15,25 @@ try:
 except Exception:
     PLOTLY = False
 
+# Yahoo Finance (no key)
+try:
+    import yfinance as yf
+    HAVE_YF = True
+except Exception:
+    HAVE_YF = False
+
 from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
 
-# ============================== THEME / CSS (same) ===========================
+# ============================== THEME / CSS (unchanged) =======================
 P_PRIMARY = "#06b6d4"   # cyan-500
-P_TEXT    = "#0f172a"
-P_TEXT2   = "#475569"
-P_BORDER  = "#e2e8f0"
+P_DEEP    = "#0ea5e9"   # sky-500
+P_ACCENT  = "#8b5cf6"   # violet-500
+P_TEXT    = "#0f172a"   # slate-900
+P_TEXT2   = "#475569"   # slate-600
+P_BORDER  = "#e2e8f0"   # slate-200
+P_SOFTBG  = "#f8fafc"   # slate-50
 
 st.markdown(
     f"""
@@ -78,7 +88,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ============================== HEADER (same) =================================
+# ============================== HEADER (unchanged) ============================
 st.markdown(
     """
     <div class="banner">
@@ -91,7 +101,7 @@ st.markdown(
 
 BASE = "EUR"
 
-# ============================== HELPERS (same) ================================
+# ============================== HELPERS (unchanged) ===========================
 def normalize_headers(cols): return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 def parse_number_robust(x):
     if pd.isna(x): return np.nan
@@ -188,10 +198,11 @@ def detect_part_number_cols(df_in):
     for c, n in norm.items():
         if any(k in n for k in cues):
             hits.append(c)
+    hits = [c for c in hits if c not in ["category_resolved"]]
     hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
     return hits
 
-# ============================== UPLOAD (same) ================================
+# ============================== UPLOAD (unchanged) ============================
 with st.sidebar:
     st.header("Data")
     uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
@@ -203,7 +214,7 @@ if not uploaded:
 raw = pd.read_excel(uploaded)
 raw.columns = [str(c) for c in raw.columns]
 
-# ============================== MAPPING (same) ===============================
+# ============================== MAPPING (unchanged) ===========================
 mapping = suggest_columns(raw)
 with st.sidebar:
     st.subheader("Column mapping")
@@ -216,12 +227,29 @@ with st.sidebar:
     if "quantity" not in mapping:
         mapping["quantity"] = st.selectbox("Quantity", options=raw.columns, key="qty_pick")
 
+# Optional ticker mapping upload (no changes elsewhere)
+with st.sidebar:
+    st.caption("Optional: upload supplier→ticker map (CSV: supplier,ticker)")
+    map_file = st.file_uploader("supplier_tickers.csv", type=["csv"], key="sup_ticker_map", accept_multiple_files=False)
+
+def load_user_ticker_map(file):
+    try:
+        m = pd.read_csv(file)
+        m.columns = [c.strip().lower() for c in m.columns]
+        if "supplier" in m.columns and "ticker" in m.columns:
+            m["supplier_norm"] = m["supplier"].astype(str).str.strip().str.lower()
+            return dict(zip(m["supplier_norm"], m["ticker"].astype(str).str.strip()))
+    except Exception:
+        pass
+    return {}
+USER_TICKER_MAP = load_user_ticker_map(map_file) if map_file else {}
+
 df = raw.copy()
 for k in ["supplier","currency","unit_price","quantity","category","cat_family","cat_group"]:
     if k in mapping:
         df[k] = raw[mapping[k]]
 
-# Category candidates (same)
+# Category candidates (unchanged)
 cat_cands, label_to_col = [], {}
 def _add_cand(label, colname):
     if colname and colname in df.columns and df[colname].notna().any():
@@ -250,7 +278,7 @@ with st.sidebar:
 resolved_cat_col = label_to_col[cat_choice]
 df["category_resolved"] = df[resolved_cat_col].copy()
 
-# ============================== FX + SPEND (same) ============================
+# ============================== FX + SPEND (unchanged) ========================
 df["unit_price"] = df["unit_price"].apply(parse_number_robust)
 df["quantity"]   = df["quantity"].apply(parse_number_robust)
 
@@ -320,7 +348,7 @@ else:
 
 df["_spend_eur"] = ensure_numeric_spend(df["_spend_eur"])
 
-# ============================== AGGREGATES (same) ============================
+# ============================== AGGREGATES (unchanged) ========================
 cat = (df.groupby("category_resolved", dropna=False)
        .agg(spend_eur=("_spend_eur","sum"),
             lines=("category_resolved","count"),
@@ -337,7 +365,7 @@ sup_tot = (df.groupby("supplier", dropna=False)
            .rename(columns={"supplier":"Supplier"}))
 sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
 
-# Part numbers for KPI and Deep Dives
+# Part numbers (unchanged)
 part_cols = detect_part_number_cols(raw)
 part_count = 0
 part_id_col = None
@@ -349,7 +377,7 @@ if part_cols:
     if part_id_col:
         part_count = int(raw[part_id_col].astype(str).replace({"nan":np.nan,"":np.nan}).nunique())
 
-# ============================== NAV (same) ====================================
+# ============================== NAV (unchanged) ===============================
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
 # ============================== DASHBOARD (unchanged) =========================
@@ -359,6 +387,7 @@ if page == "Dashboard":
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
+    # KPI row
     st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card"><div class="kpi-title">Total Spend</div>
@@ -442,7 +471,7 @@ if page == "Dashboard":
     mix = pd.DataFrame()
     if top20_order_for_mix:
         mix = (
-            df[df["supplier"].isin(top20_order_for_mix)]
+            df[df["supplier"].isin(top20_order_for_mix])]
             .groupby(["supplier","category_resolved"])["_spend_eur"].sum()
             .reset_index()
             .rename(columns={"supplier":"Supplier"})
@@ -452,10 +481,12 @@ if page == "Dashboard":
         totals = mix.groupby("Supplier")["_spend_eur"].transform("sum")
         mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
         mix["Supplier"] = pd.Categorical(mix["Supplier"], categories=top20_order_for_mix, ordered=True)
+
         if not 'color_map' in locals() or not color_map:
             palette = px.colors.qualitative.Set3
             all_cats = sorted(df["category_resolved"].dropna().unique().tolist())
             color_map = {c: palette[i % len(palette)] for i, c in enumerate(all_cats)}
+
         fig3 = px.bar(mix, x="share_pct", y="Supplier", color="category_resolved",
                       orientation="h", barmode="stack", color_discrete_map=color_map)
         fig3.update_layout(height=max(560, len(top20_order_for_mix)*26 + 180),
@@ -514,12 +545,15 @@ if page == "Dashboard":
     else:
         st.success("No obvious data quality issues found in key fields.")
 
-# ============================== DEEP DIVES (extended) =========================
+# ============================== DEEP DIVES (no-key enrich) ====================
 else:
     st.subheader("Deep Dives")
 
-    # --- Category picker
+    # Category picker
     categories = sorted([c for c in df["category_resolved"].dropna().unique().tolist() if str(c).strip() != ""])
+    if not categories:
+        st.info("No categories available.")
+        st.stop()
     sel_cat = st.selectbox("Select category", categories, index=0)
 
     df_cat = df[df["category_resolved"] == sel_cat].copy()
@@ -527,7 +561,7 @@ else:
                .agg(spend_eur=("_spend_eur","sum"), lines=("supplier","count"))
                .reset_index())
 
-    # # parts per supplier in this category
+    # parts per supplier in this category
     if part_id_col and part_id_col in df_cat.columns:
         pn = (df_cat.groupby("supplier")[part_id_col]
               .nunique().reset_index().rename(columns={part_id_col:"# Parts"}))
@@ -557,12 +591,54 @@ else:
                               plot_bgcolor="white", paper_bgcolor="white")
             st.plotly_chart(fig, use_container_width=True)
 
-    # ---- right: supplier overview (EDGAR)
+    # ---- right: supplier overview (Yahoo Finance -> EDGAR -> OpenCorporates)
     with right:
         st.markdown('<div class="block-title">Supplier overview</div>', unsafe_allow_html=True)
-        sel_sup = st.selectbox("Select a supplier for details", sup_cat["supplier"].tolist(), index=0)
+        sup_list = sup_cat["supplier"].tolist()
+        sel_sup = st.selectbox("Select a supplier for details", sup_list, index=0)
 
-        # SEC helpers (cached)
+        # ---------- financials w/out keys ----------
+        def _normalize_name(x:str)->str: return str(x or "").strip().lower()
+
+        def get_ticker_for_supplier(name:str, user_map:dict) -> str|None:
+            n = _normalize_name(name)
+            if n in user_map: return user_map[n]
+            return None  # rely on uploaded mapping for precision
+
+        def _safe_number(x):
+            try:
+                if x is None or (isinstance(x,float) and math.isnan(x)): return None
+                return float(x)
+            except Exception:
+                return None
+
+        def fx_convert(amount, from_ccy:str) -> float|None:
+            if amount is None: return None
+            if not from_ccy:  return amount
+            c = str(from_ccy).upper().strip()
+            row = fx.loc[fx["currency"]==c]
+            if row.empty: return amount
+            rate = row["rate_to_eur"].iloc[0]
+            try: return float(amount) * float(rate)
+            except Exception: return amount
+
+        # Yahoo Finance
+        def fin_from_yf(ticker:str) -> dict|None:
+            if not HAVE_YF: return None
+            try:
+                t = yf.Ticker(ticker)
+                info = t.info or {}
+                revenue = _safe_number(info.get("totalRevenue"))
+                margin  = _safe_number(info.get("profitMargins"))
+                if margin is not None and margin < 1.0:
+                    margin = 100.0 * margin
+                ccy     = info.get("financialCurrency")
+                if revenue is None and margin is None: return None
+                return {"provider":"YahooFinance","currency":ccy,"revenue":revenue,"margin_pct":margin}
+            except Exception:
+                return None
+
+        # SEC EDGAR (no key)
         @st.cache_data(ttl=24*60*60, show_spinner=False)
         def _sec_ticker_table():
             try:
@@ -585,7 +661,7 @@ else:
             n = re.sub(r"\s+", " ", n).strip()
             return n
 
-        def _closest_sec_match(name: str, sec_df: pd.DataFrame, min_score=80):
+        def _closest_sec_match(name: str, sec_df: pd.DataFrame, min_score=84):
             if sec_df is None or sec_df.empty or not isinstance(name, str): return None
             q = _clean_name(name)
             cand_name = process.extractOne(q, (_clean_name(x) for x in sec_df["name"].tolist()), scorer=fuzz.WRatio)
@@ -595,108 +671,131 @@ else:
                 if len(row):
                     r = row.iloc[0]
                     best = {"cik": str(r["cik"]).zfill(10), "ticker": r["ticker"], "name": r["name"]}
-            cand_tic = process.extractOne(q, sec_df["ticker"].tolist(), scorer=fuzz.WRatio)
-            if (best is None) and cand_tic and cand_tic[1] >= min_score:
-                row = sec_df.loc[sec_df["ticker"] == cand_tic[0]].head(1)
-                if len(row):
-                    r = row.iloc[0]
-                    best = {"cik": str(r["cik"]).zfill(10), "ticker": r["ticker"], "name": r["name"]}
             return best
 
-        @st.cache_data(ttl=24*60*60, show_spinner=False)
-        def fetch_fin_sec_edgar(company_name: str):
+        def fin_from_edgar(company_name: str) -> dict|None:
             try:
                 sec = _sec_ticker_table()
-            except Exception:
-                return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
-
-            match = _closest_sec_match(company_name, sec)
-            if match is None:
-                return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
-
-            cik = match["cik"]
-            url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
-            headers = {"User-Agent": "ProcureIQ/1.0 (contact: procurement@example.com)"}
-
-            try:
+                match = _closest_sec_match(company_name, sec)
+                if match is None: return None
+                cik = match["cik"]
+                url = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+                headers = {"User-Agent": "ProcureIQ/1.0 (contact: procurement@example.com)"}
                 r = requests.get(url, headers=headers, timeout=25)
-                r.raise_for_status()
+                if r.status_code != 200: return None
                 data = r.json()
-            except Exception:
-                return {"revenue_m_eur": None, "margin_pct": None, "source_url": None}
 
-            def _latest_for_any(taxonomy: str, concepts: list, preferred_unit="USD"):
-                for concept in concepts:
-                    try:
-                        units = data["facts"][taxonomy][concept]["units"]
-                    except Exception:
-                        continue
-                    series = None
-                    if preferred_unit and preferred_unit in units:
-                        series = units[preferred_unit]
-                    elif len(units):
-                        series = next(iter(units.values()))
-                    if not series:
-                        continue
-                    series = sorted(series, key=lambda x: (x.get("end",""), x.get("fy",""), x.get("period","")))
-                    if series:
-                        val = series[-1].get("val", None)
+                def _latest_for_any(taxonomy: str, concepts: list, preferred_unit="USD"):
+                    for concept in concepts:
                         try:
-                            return float(val)
+                            units = data["facts"][taxonomy][concept]["units"]
                         except Exception:
                             continue
+                        series = None
+                        if preferred_unit and preferred_unit in units:
+                            series = units[preferred_unit]
+                        elif len(units):
+                            series = next(iter(units.values()))
+                        if not series:
+                            continue
+                        series = sorted(series, key=lambda x: (x.get("end",""), x.get("fy",""), x.get("period","")))
+                        if series:
+                            val = series[-1].get("val", None)
+                            try: return float(val)
+                            except Exception: continue
+                    return None
+
+                revenue_candidates = [
+                    "RevenueFromContractWithCustomerExcludingAssessedTax",
+                    "SalesRevenueNet","Revenues","Revenue","TotalRevenuesAndOtherIncome",
+                ]
+                income_candidates = [
+                    "NetIncomeLoss","ProfitLoss",
+                    "NetIncomeLossAvailableToCommonStockholdersBasic",
+                    "NetIncomeLossIncludingPortionAttributableToNoncontrollingInterest",
+                ]
+
+                rev_usd = _latest_for_any("us-gaap", revenue_candidates, preferred_unit="USD")
+                ni_usd  = _latest_for_any("us-gaap", income_candidates,  preferred_unit="USD")
+                if rev_usd is None:
+                    rev_usd = _latest_for_any("us-gaap", revenue_candidates, preferred_unit=None)
+                if ni_usd is None:
+                    ni_usd  = _latest_for_any("us-gaap", income_candidates,  preferred_unit=None)
+
+                if rev_usd is None and ni_usd is None: return None
+                margin = None
+                if (rev_usd is not None) and (ni_usd is not None) and rev_usd != 0:
+                    margin = 100.0 * (ni_usd / rev_usd)
+                return {"provider":"EDGAR","currency":"USD","revenue":rev_usd,"margin_pct":margin}
+            except Exception:
                 return None
 
-            revenue_candidates = [
-                "RevenueFromContractWithCustomerExcludingAssessedTax",
-                "SalesRevenueNet","Revenues","Revenue","TotalRevenuesAndOtherIncome",
-            ]
-            income_candidates = [
-                "NetIncomeLoss","ProfitLoss",
-                "NetIncomeLossAvailableToCommonStockholdersBasic",
-                "NetIncomeLossIncludingPortionAttributableToNoncontrollingInterest",
-            ]
+        def fin_from_opencorps(name:str) -> dict|None:
+            try:
+                q = requests.get("https://api.opencorporates.com/v0.4/companies/search",
+                                 params={"q": name, "per_page":1}, timeout=10)
+                if q.status_code != 200: return None
+                js = q.json()
+                if js.get("results",{}).get("companies"):
+                    return {"provider":"OpenCorporates"}
+                return None
+            except Exception:
+                return None
 
-            rev_usd = _latest_for_any("us-gaap", revenue_candidates, preferred_unit="USD")
-            ni_usd  = _latest_for_any("us-gaap", income_candidates,  preferred_unit="USD")
-            if rev_usd is None:
-                rev_usd = _latest_for_any("us-gaap", revenue_candidates, preferred_unit=None)
-            if ni_usd is None:
-                ni_usd  = _latest_for_any("us-gaap", income_candidates,  preferred_unit=None)
+        def enrich_financials_for_supplier(supplier_name:str) -> dict:
+            # try explicit ticker mapping first
+            ticker = None
+            n = str(supplier_name or "").strip().lower()
+            if USER_TICKER_MAP and n in USER_TICKER_MAP:
+                ticker = USER_TICKER_MAP[n]
 
-            revenue_m_eur, margin_pct = None, None
-            if rev_usd is not None:
-                try:
-                    revenue_m_eur = (rev_usd * 0.93) / 1_000_000.0
-                except Exception:
-                    revenue_m_eur = None
-            if (rev_usd is not None) and (ni_usd is not None) and rev_usd != 0:
-                try:
-                    margin_pct = 100.0 * (ni_usd / rev_usd)
-                except Exception:
-                    margin_pct = None
+            # 1) Yahoo Finance if we have a ticker
+            if ticker:
+                yf_fin = fin_from_yf(ticker)
+                if yf_fin:
+                    rev_eur = fx_convert(yf_fin.get("revenue"), yf_fin.get("currency"))
+                    return {"provider":"YahooFinance", "ticker":ticker,
+                            "revenue_eur_million": (rev_eur/1_000_000.0) if rev_eur is not None else None,
+                            "margin_pct": yf_fin.get("margin_pct")}
 
-            return {"revenue_m_eur": revenue_m_eur, "margin_pct": margin_pct, "source_url": url}
+            # 2) EDGAR by name (for US filers, no key)
+            edg = fin_from_edgar(supplier_name)
+            if edg:
+                rev_eur = fx_convert(edg.get("revenue"), edg.get("currency"))
+                return {"provider":"EDGAR", "ticker":None,
+                        "revenue_eur_million": (rev_eur/1_000_000.0) if rev_eur is not None else None,
+                        "margin_pct": edg.get("margin_pct")}
 
-        fin = fetch_fin_sec_edgar(str(sel_sup))
+            # 3) OpenCorporates presence as last resort (no numbers)
+            oc = fin_from_opencorps(supplier_name)
+            if oc:
+                return {"provider":"OpenCorporates", "ticker":None,
+                        "revenue_eur_million": None, "margin_pct": None}
+
+            # Nothing
+            return {"provider": None, "ticker": None, "revenue_eur_million": None, "margin_pct": None}
+
+        fin = enrich_financials_for_supplier(sel_sup)
         c1, c2 = st.columns(2)
         with c1:
             st.caption("Revenue (EUR million)")
-            st.markdown(f"### {('N/A' if fin['revenue_m_eur'] is None else f'{fin['revenue_m_eur']:.0f}')}")
+            st.markdown(f"### {('N/A' if fin['revenue_eur_million'] is None else f'{fin['revenue_eur_million']:.0f}')}")
+
         with c2:
             st.caption("Margin (%)")
             st.markdown(f"### {('N/A' if fin['margin_pct'] is None else f'{fin['margin_pct']:.1f}%')}")
 
-        if fin["source_url"]:
-            st.markdown(f"[Source: SEC EDGAR companyfacts]({fin['source_url']})")
+        prov = fin.get("provider")
+        if prov:
+            st.info(f"Financials source: **{prov}**" + (f" · Ticker: `{fin.get('ticker')}`" if fin.get("ticker") else ""))
         else:
-            st.info("No public EDGAR data found for this supplier (likely not a US-listed filer).")
+            st.warning("No reliable public financials found with keyless sources for this supplier.")
 
-    # ------------------------ Research & Negotiation Ideas ---------------------
+    # ------------------------ Research & Negotiation Ideas (no keys) ----------
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.subheader("Research-backed negotiation & cost-reduction ideas")
 
-    # Helpers: Google News RSS (no key) + optional SerpAPI
+    # Google News RSS (no key)
     @st.cache_data(ttl=2*60*60, show_spinner=False)
     def google_news(query: str, max_items=8):
         url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en"
@@ -713,41 +812,14 @@ else:
         except Exception:
             return []
 
-    @st.cache_data(ttl=6*60*60, show_spinner=False)
-    def serpapi_links(query: str, max_items=6):
-        key = os.getenv("SERPAPI_KEY")
-        if not key:
-            return []
-        try:
-            url = "https://serpapi.com/search.json"
-            params = {"engine":"google","q":query,"num":max_items,"api_key":key}
-            r = requests.get(url, params=params, timeout=25)
-            r.raise_for_status()
-            js = r.json()
-            out = []
-            for it in js.get("organic_results", [])[:max_items]:
-                out.append({"title": it.get("title",""), "link": it.get("link","")})
-            return out
-        except Exception:
-            return []
-
-    # Build signals from your dataset for the (category, supplier)
     df_sel = df_cat[df_cat["supplier"] == sel_sup].copy()
     parts_n  = int(df_sel[part_id_col].nunique()) if (part_id_col and part_id_col in df_sel.columns) else 0
     avg_price = (df_sel["_spend_eur"].sum() / max(1.0, df_sel["quantity"].sum())) if df_sel["quantity"].sum() else None
 
-    # Query strings
-    q_news = f'{sel_sup} {sel_cat} supplier'
-    q_bench = f'{sel_cat} component price benchmark manufacturing cost'
-    q_vave  = f'{sel_cat} cost reduction value analysis value engineering ideas'
-
+    q_news  = f'{sel_sup} {sel_cat} supplier'
     news = google_news(q_news, 8)
-    bench_links = serpapi_links(q_bench, 6)
-    vave_links  = serpapi_links(q_vave, 6)
 
-    # Lay out three columns of ideas with sources
     i1, i2 = st.columns([1.25, 1])
-
     with i1:
         st.markdown("##### Market & price checks")
         if avg_price:
@@ -755,19 +827,20 @@ else:
         else:
             st.markdown("<span class='idea-tag'>internal</span> Could not compute average unit price (missing qty).", unsafe_allow_html=True)
 
-        if bench_links:
-            st.caption("External benchmark links")
-            for it in bench_links:
-                st.markdown(f"- [{it['title']}]({it['link']})")
-        else:
-            st.info("Add `SERPAPI_KEY` as an environment variable to surface benchmark/search links automatically.")
+        # provide Google search links (no key) the user can click
+        def google_link(label, q):
+            url = f"https://www.google.com/search?q={requests.utils.quote(q)}"
+            st.markdown(f"- [{label}]({url})")
 
-        st.markdown("##### VAVE levers (source links)")
-        if vave_links:
-            for it in vave_links:
-                st.markdown(f"- [{it['title']}]({it['link']})")
-        else:
-            st.info("Provide `SERPAPI_KEY` to auto-fetch VAVE sources (or I can wire a different search API).")
+        st.markdown("**Benchmark search links**")
+        google_link("Commodity/index pricing", f"{sel_cat} price index benchmark supplier cost")
+        google_link("Should-cost estimators", f"{sel_cat} should-cost model manufacturing conversion overhead scrap")
+        google_link("Regional price parity", f"{sel_cat} component price EU vs Asia logistics duty")
+
+        st.markdown("##### VAVE levers (search links)")
+        google_link("VAVE levers list", f"{sel_cat} value analysis value engineering cost reduction ideas")
+        google_link("Material standardization", f"{sel_cat} standardize material grades commonize parts")
+        google_link("Design-to-cost", f"{sel_cat} design to cost thickness optimization alternate materials")
 
     with i2:
         st.markdown("##### Recent news (potential negotiation angles)")
@@ -777,24 +850,24 @@ else:
         else:
             st.info("No recent Google-News items fetched right now.")
 
-    # A few auto-generated idea bullets using your data (no invented numbers)
+    # Data-driven bullets
     st.markdown("##### Data-driven opportunities (from your cube)")
     bullets = []
     supplier_total = float(df_sel["_spend_eur"].sum())
     cat_total      = float(df_cat["_spend_eur"].sum())
     if supplier_total and cat_total:
         share = 100.0 * supplier_total / cat_total
-        bullets.append(f"<span class='idea-tag'>mix</span> Supplier accounts for **{share:,.1f}%** of spend in *{sel_cat}*. Explore volume-for-price trade: step pricing or multi-year commitment.")
+        bullets.append(f"<span class='idea-tag'>mix</span> Supplier accounts for **{share:,.1f}%** of spend in *{sel_cat}*. Explore step pricing and volume-for-price trades.")
     if parts_n > 0:
-        bullets.append(f"<span class='idea-tag'>complexity</span> **{parts_n} part numbers** with {sel_sup} in this category — check standardisation, consolidation and tooling amortisation.")
+        bullets.append(f"<span class='idea-tag'>complexity</span> **{parts_n} part numbers** with {sel_sup}. Check standardisation, consolidation, tooling amortisation.")
     if avg_price:
-        bullets.append("<span class='idea-tag'>should-cost</span> Build a should-cost using resin index, conversion (machine-hour), scrap & overhead; compare against the benchmark links on the left.")
+        bullets.append("<span class='idea-tag'>should-cost</span> Build a should-cost using material index + conversion (machine-hour), scrap & overhead; compare with benchmark search links above.")
     if len(bullets)==0:
         bullets.append("<span class='idea-tag'>hint</span> Add quantities/part IDs to unlock more specific ideas.")
     for b in bullets:
         st.markdown(f"- <span class='idea-bullet'>{b}</span>", unsafe_allow_html=True)
 
-# ============================== DOWNLOADS (same) ==============================
+# ============================== DOWNLOADS (unchanged) =========================
 st.divider()
 st.markdown("#### Download full dataset & summaries (XLSX)")
 buf = io.BytesIO()
