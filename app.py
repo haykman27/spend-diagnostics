@@ -1,8 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer  (web-fetched supplier financials + news levers)
+# ProcureIQ — Spend Explorer   (full app with improved Deep Dives supplier view)
 # ──────────────────────────────────────────────────────────────────────────────
 
-import io, re, time, html
+import io, re, time
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -16,21 +16,16 @@ except Exception:
 
 from rapidfuzz import process, fuzz
 
-# Web fetch (no API keys)
-try:
-    import requests
-    from bs4 import BeautifulSoup
-    HAVE_WEB = True
-except Exception:
-    HAVE_WEB = False
-
 st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
 
-# ============================== THEME / CSS ===================================
+# ============================== THEME / CSS ===============================
 P_PRIMARY = "#06b6d4"   # cyan-500
+P_DEEP    = "#0ea5e9"   # sky-500
+P_ACCENT  = "#8b5cf6"   # violet-500
 P_TEXT    = "#0f172a"   # slate-900
 P_TEXT2   = "#475569"   # slate-600
 P_BORDER  = "#e2e8f0"   # slate-200
+P_SOFTBG  = "#f8fafc"   # slate-50
 
 st.markdown(
     f"""
@@ -57,10 +52,11 @@ st.markdown(
       .kpi-value {{ font-size:1.8rem;font-weight:800;letter-spacing:-.02rem; white-space:nowrap; }}
       .kpi-unit  {{ font-weight:700; font-size:1.1rem; color:{P_TEXT2}; margin-left:.3rem; }}
 
-      .block-title {{ font-weight:800; font-size:1.05rem; margin:6px 0 8px 6px; color: {P_TEXT}; }}
+      .block-title {{ font-weight:800; font-size:1.05rem; margin:6px 0 8px 6px; color:{P_TEXT}; }}
       .spacer-16 {{ margin-top:16px; }}
       .spacer-24 {{ margin-top:24px; }}
 
+      /* Data Quality pills */
       .dq-row {{ display:flex; flex-wrap:wrap; gap:10px; margin:6px 0 12px 0; }}
       .dq-pill {{
         display:flex; align-items:center; gap:10px;
@@ -80,7 +76,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ============================== HEADER ========================================
+# ============================== HEADER ===============================
 st.markdown(
     """
     <div class="banner">
@@ -93,41 +89,32 @@ st.markdown(
 
 BASE = "EUR"
 
-# ============================== HELPERS =======================================
-def normalize_headers(cols):
+# ============================== HELPERS ===============================
+def normalize_headers(cols): 
     return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 
 def parse_number_robust(x):
     if pd.isna(x): return np.nan
     if isinstance(x, (int, float)): return float(x)
     s = re.sub(r"[^\d,\.\-]", "", str(x))
-    if "," in s and "." in s:
-        s = s.replace(",", "")
-    elif "," in s and s.count(",")==1 and len(s.split(",")[-1]) in (2,3):
-        s = s.replace(",", ".")
-    else:
-        s = s.replace(",", "")
+    if "," in s and "." in s: s = s.replace(",", "")
+    elif "," in s and s.count(",")==1 and len(s.split(",")[-1]) in (2,3): s = s.replace(",", ".")
+    else: s = s.replace(",", "")
     try: return float(s)
     except: return np.nan
 
 def ensure_numeric_spend(s: pd.Series) -> pd.Series:
-    if s.dtype == bool:
-        s = s.astype(float)
-    elif s.dtype.kind in ("i","u","f"):
-        s = s.astype(float)
-    else:
-        s = pd.to_numeric(s, errors="coerce")
+    if s.dtype == bool: s = s.astype(float)
+    elif s.dtype.kind in ("i","u","f"): s = s.astype(float)
+    else: s = pd.to_numeric(s, errors="coerce")
     return s.fillna(0.0).astype(float)
 
-CURRENCY_SYMBOL_MAP = {
-    "€":"EUR","$":"USD","£":"GBP","¥":"JPY","₩":"KRW","₹":"INR","₺":"TRY","R$":"BRL","S$":"SGD",
-    "SEK":"SEK","NOK":"NOK","DKK":"DKK"
-}
+CURRENCY_SYMBOL_MAP = {"€":"EUR","$":"USD","£":"GBP","¥":"JPY","₩":"KRW","₹":"INR","₺":"TRY","R$":"BRL","S$":"SGD"}
 ISO_3 = {
-    "EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD","CAD",
-    "MXN","BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS","VND","NGN","RUB"
+    "EUR","USD","GBP","JPY","CNY","CHF","SEK","NOK","DKK","PLN","HUF","CZK","RON","AUD","NZD",
+    "CAD","MXN","BRL","ZAR","AED","SAR","HKD","SGD","INR","TRY","KRW","TWD","THB","PHP","ILS",
+    "VND","NGN","RUB"
 }
-
 def detect_iso_from_text(text):
     if text is None or (isinstance(text,float) and np.isnan(text)): return None
     s = str(text).upper().strip()
@@ -140,15 +127,12 @@ def detect_iso_from_text(text):
     for k,v in alias.items():
         if k in s: return v
     for sym in sorted(CURRENCY_SYMBOL_MAP, key=len, reverse=True):
-        if sym in s:
-            return CURRENCY_SYMBOL_MAP[sym]
-    if "SEK" in s: return "SEK"
-    if "NOK" in s: return "NOK"
-    if "DKK" in s: return "DKK"
+        if sym in s: return CURRENCY_SYMBOL_MAP[sym]
     return None
 
 @st.cache_data(ttl=6*60*60, show_spinner=False)
 def load_latest_ecb():
+    # Keep URL as string (fix prior syntax issue)
     url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv"
     fx_wide = pd.read_csv(url)
     fx_wide.rename(columns={"Date":"date"}, inplace=True)
@@ -179,7 +163,6 @@ TARGETS = {
     "quantity":   ["quantity","qty","order qty","qty ordered","units","volume","po qty","po quantity","ordered qty"],
     "amount":     ["amount","purchase amount","line amount","total value","net value","extended price"]
 }
-
 def suggest_columns(df):
     cols = df.columns.tolist()
     norm = normalize_headers(cols)
@@ -194,7 +177,10 @@ def suggest_columns(df):
         if best: out[k] = back[best]
     return out
 
-SPEND_NAME_CUES = ["purchase amount","po amount","line total","total value","net value","extended price","base curr","global curr","reporting curr"]
+SPEND_NAME_CUES = [
+    "purchase amount","po amount","line total","total value","net value",
+    "extended price","base curr","global curr","reporting curr"
+]
 def detect_spend_column(df):
     hits = [c for c in df.columns if any(k in c.lower() for k in SPEND_NAME_CUES)]
     if not hits: return None
@@ -202,7 +188,7 @@ def detect_spend_column(df):
     med = {c: pd.to_numeric(df[c].apply(parse_number_robust), errors="coerce").median(skipna=True) for c in hits}
     return max(med, key=med.get)
 
-def fmt_k(s: pd.Series) -> pd.Series:
+def fmt_k(s: pd.Series) -> pd.Series: 
     return (s/1_000.0).round(0)
 
 def detect_part_number_cols(df):
@@ -215,7 +201,7 @@ def detect_part_number_cols(df):
     hits = sorted(hits, key=lambda x: 0 if "item" in x.lower() else (1 if "material" in x.lower() else 2))
     return hits
 
-# ============================== UPLOAD ========================================
+# ============================== UPLOAD ===============================
 with st.sidebar:
     st.header("Data")
     uploaded = st.file_uploader("Upload Excel (.xlsx / .xls)", type=["xlsx","xls"])
@@ -227,7 +213,7 @@ if not uploaded:
 raw = pd.read_excel(uploaded)
 raw.columns = [str(c) for c in raw.columns]
 
-# ============================== MAPPING =======================================
+# ============================== MAPPING ===============================
 mapping = suggest_columns(raw)
 with st.sidebar:
     st.subheader("Column mapping")
@@ -245,7 +231,7 @@ for k in ["supplier","currency","unit_price","quantity","category","cat_family",
     if k in mapping:
         df[k] = raw[mapping[k]]
 
-# ---- Category candidates
+# Category candidates
 cat_cands, label_to_col = [], {}
 def _add_cand(label, colname):
     if colname and colname in df.columns and df[colname].notna().any():
@@ -274,7 +260,7 @@ with st.sidebar:
 resolved_cat_col = label_to_col[cat_choice]
 df["category_resolved"] = df[resolved_cat_col].copy()
 
-# ============================== FX + SPEND ====================================
+# ============================== FX + SPEND ===============================
 df["unit_price"] = df["unit_price"].apply(parse_number_robust)
 df["quantity"]   = df["quantity"].apply(parse_number_robust)
 
@@ -344,7 +330,7 @@ else:
 
 df["_spend_eur"] = ensure_numeric_spend(df["_spend_eur"])
 
-# ============================== AGGREGATES ====================================
+# ============================== AGGREGATES ===============================
 cat = (df.groupby("category_resolved", dropna=False)
        .agg(spend_eur=("_spend_eur","sum"),
             lines=("category_resolved","count"),
@@ -361,8 +347,8 @@ sup_tot = (df.groupby("supplier", dropna=False)
            .rename(columns={"supplier":"Supplier"}))
 sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
 
-# Part numbers
-def detect_part_number_cols(df_in):
+# Part numbers (as before)
+def detect_part_number_cols_for_count(df_in):
     norm = {c: c.lower() for c in df_in.columns}
     cues = ["item", "item number", "item no", "material", "material number", "sku", "code", "part", "pn", "material code"]
     hits = []
@@ -371,7 +357,8 @@ def detect_part_number_cols(df_in):
             hits.append(c)
     hits = [c for c in hits if c not in [mapping.get("cat_family"), mapping.get("cat_group"), resolved_cat_col]]
     return hits
-part_cols = detect_part_number_cols(raw)
+
+part_cols = detect_part_number_cols_for_count(raw)
 part_count = 0
 if part_cols:
     chosen = None
@@ -381,43 +368,48 @@ if part_cols:
     if chosen:
         part_count = int(raw[chosen].astype(str).replace({"nan":np.nan,"":np.nan}).nunique())
 
-# ============================== NAV ===========================================
+# ============================== NAV ===============================
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
-# ============================== DASHBOARD =====================================
+# ============================== DASHBOARD ===============================
 if page == "Dashboard":
     total_spend = float(df["_spend_eur"].sum())
     total_lines = int(len(df))
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    # KPI row
+    # KPI row (horizontal)
     st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">Total Spend</div>
           <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
-        </div>''', unsafe_allow_html=True)
+        </div>
+    ''', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">Categories</div>
           <div class="kpi-value">{total_categories:,}</div>
-        </div>''', unsafe_allow_html=True)
+        </div>
+    ''', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">Suppliers</div>
           <div class="kpi-value">{total_suppliers:,}</div>
-        </div>''', unsafe_allow_html=True)
+        </div>
+    ''', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">Part Numbers</div>
           <div class="kpi-value">{part_count:,}</div>
-        </div>''', unsafe_allow_html=True)
+        </div>
+    ''', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
           <div class="kpi-title">PO Lines</div>
           <div class="kpi-value">{total_lines:,}</div>
-        </div>''', unsafe_allow_html=True)
+        </div>
+    ''', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
@@ -425,12 +417,12 @@ if page == "Dashboard":
     # Donut left, bar right
     left, right = st.columns([1.05, 2.2], gap="large")
 
-    # Donut
     with left:
         st.markdown('<div class="block-title">Spend by Category</div>', unsafe_allow_html=True)
         donut_raw = (df.groupby("category_resolved", dropna=False)["_spend_eur"].sum()
                        .reset_index().rename(columns={"category_resolved":"Category","_spend_eur":"spend_eur"}))
         donut_raw = donut_raw[donut_raw["spend_eur"]>0].sort_values("spend_eur", ascending=False)
+
         topN_default = 10 if len(donut_raw) >= 10 else len(donut_raw)
         st.slider("Top categories in donut", 5, min(15, len(donut_raw)), topN_default, key="donutN")
 
@@ -442,6 +434,8 @@ if page == "Dashboard":
             topN_df = donut_raw.head(st.session_state.donutN)
             other = float(donut_raw["spend_eur"].iloc[st.session_state.donutN:].sum())
             donut_df = pd.concat([topN_df, pd.DataFrame([{"Category":"Other","spend_eur":other}]) if other>0 else pd.DataFrame()], ignore_index=True)
+
+            # color map used ALSO by Supplier×Category Mix
             if PLOTLY:
                 palette = px.colors.qualitative.Set3
                 cats_in_palette = donut_df["Category"].tolist()
@@ -455,7 +449,6 @@ if page == "Dashboard":
             else:
                 st.dataframe(donut_df, use_container_width=True)
 
-    # Top suppliers
     with right:
         st.markdown('<div class="block-title">Top Suppliers by Spend</div>', unsafe_allow_html=True)
         top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20).copy()
@@ -479,11 +472,12 @@ if page == "Dashboard":
         else:
             st.info("No supplier spend to plot yet.")
 
-    # Supplier × Category Mix (Top 20; same order)
+    # Supplier × Category Mix (match Top-20 names AND ORDER)
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.markdown('<div class="block-title">Supplier × Category Mix (Top 20 suppliers)</div>', unsafe_allow_html=True)
 
     top20_suppliers = top_sup["Supplier"].tolist() if 'top_sup' in locals() and not top_sup.empty else []
+
     if top20_suppliers:
         top20_order_for_mix = (
             sup_tot[sup_tot["Supplier"].isin(top20_suppliers)]
@@ -505,10 +499,12 @@ if page == "Dashboard":
         totals = mix.groupby("Supplier")["_spend_eur"].transform("sum")
         mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
         mix["Supplier"] = pd.Categorical(mix["Supplier"], categories=top20_order_for_mix, ordered=True)
-        if 'color_map' not in locals() or not color_map:
+
+        if not 'color_map' in locals() or not color_map:
             palette = px.colors.qualitative.Set3
             all_cats = sorted(df["category_resolved"].dropna().unique().tolist())
             color_map = {c: palette[i % len(palette)] for i, c in enumerate(all_cats)}
+
         fig3 = px.bar(
             mix, x="share_pct", y="Supplier", color="category_resolved",
             orientation="h", barmode="stack", color_discrete_map=color_map
@@ -525,7 +521,7 @@ if page == "Dashboard":
     else:
         st.info("Mix chart will appear once the Top-20 suppliers are available.")
 
-    # Data Quality
+    # ------------------------ DATA QUALITY ------------------------
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
 
@@ -546,6 +542,7 @@ if page == "Dashboard":
         ("Blank supplier", int(blank_supplier.sum())),
         ("Blank category", int(blank_category.sum())),
     ]
+
     st.markdown('<div class="dq-row">', unsafe_allow_html=True)
     for label, val in dq:
         cls = "ok" if val==0 else ("warn" if val<10 else "bad")
@@ -557,344 +554,298 @@ if page == "Dashboard":
         ''', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# ============================== DEEP DIVES ====================================
+    issues_mask = (unknown_ccy | missing_price | missing_qty |
+                   zero_neg_price | zero_neg_qty | blank_supplier | blank_category)
+    sample_cols = [c for c in ["supplier","category_resolved","currency","unit_price","quantity","_spend_eur"]
+                   if c in df.columns]
+    issues = df.loc[issues_mask, sample_cols].head(200)
+    if not issues.empty:
+        st.dataframe(issues.rename(columns={
+            "supplier":"Supplier","category_resolved":"Category","currency":"Currency",
+            "unit_price":"Unit Price","quantity":"Quantity","_spend_eur":"Spend (EUR)"}), use_container_width=True)
+    else:
+        st.success("No obvious data quality issues found in key fields.")
+
+# ============================== (1) NEW HELPERS FOR DEEP DIVES FINANCIALS ===============================
 else:
+    # ---------- helpers for web-lite financials & targeted levers ----------
+    import requests
+    from bs4 import BeautifulSoup
+    from urllib.parse import quote
+
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    }
+
+    def _fetch_text(url: str, timeout=12) -> str:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=timeout)
+            if r.ok and r.text:
+                return r.text
+        except Exception:
+            pass
+        try:
+            r = requests.get(
+                f"https://r.jina.ai/http://{url.replace('https://','').replace('http://','')}",
+                headers=HEADERS, timeout=timeout
+            )
+            if r.ok and r.text:
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _clean_number(s: str) -> float | None:
+        if not s: 
+            return None
+        txt = s.lower().replace(",", "")
+        mult = 1.0
+        if "billion" in txt or "bln" in txt or " bn" in txt or " b " in txt:
+            mult = 1_000.0
+        elif "million" in txt or " mln" in txt or " m " in txt:
+            mult = 1.0
+        if "b" in txt and not ("mb" in txt or "gb" in txt):
+            mult = 1_000.0
+        if "m" in txt and "margin" not in txt and " ttm" not in txt:
+            mult = max(mult, 1.0)
+        import re
+        m = re.search(r"([-+]?\d+(\.\d+)?)", txt)
+        if not m: 
+            return None
+        val = float(m.group(1))
+        return val * mult  # in million units
+
+    def _extract_revenue_from_cmc_html(html: str) -> tuple[float | None, str | None]:
+        if not html: 
+            return (None, None)
+        soup = BeautifulSoup(html, "html.parser")
+        text = soup.get_text(separator=" ").strip()
+        cur = None
+        if "€" in text: cur = "€"
+        elif "$" in text: cur = "$"
+        elif "£" in text: cur = "£"
+        keys = ["revenue (ttm)", "latest financial reports", "company made a revenue", "total revenue"]
+        lo = text.lower()
+        for key in keys:
+            idx = lo.find(key)
+            if idx != -1:
+                rev_m = _clean_number(text[idx: idx+300])
+                if rev_m:
+                    return (rev_m, cur)
+        idx = lo.find("revenue")
+        if idx != -1:
+            snippet = text[max(0, idx-120): idx+220]
+            rev_m = _clean_number(snippet)
+            if rev_m:
+                return (rev_m, cur)
+        return (None, None)
+
+    def _extract_margin_from_cmc_html(html: str) -> float | None:
+        if not html: 
+            return None
+        soup = BeautifulSoup(html, "html.parser")
+        t = soup.get_text(separator=" ").lower()
+        import re
+        m = re.search(r"net (profit )?margin.*?(\d+(\.\d+)?)\s*%", t)
+        if m:
+            return float(m.group(2))
+        m2 = re.search(r"(net|operating) margin.*?(\d+(\.\d+)?)\s*%", t)
+        if m2: 
+            return float(m2.group(2))
+        return None
+
+    def fetch_financials_basic(name: str) -> tuple[float | None, float | None, str | None]:
+        slug = name.lower().replace("&", "and").replace(".", "").replace(",", "")
+        slug = "-".join([p for p in slug.split() if p not in {"group", "company", "co", "sa", "ab", "ag", "gmbh", "srl"}])
+        candidates = [slug, slug.replace("-", ""), slug.split("-")[0]]
+        for s in candidates:
+            url_rev = f"https://companiesmarketcap.com/{s}/revenue/"
+            html_rev = _fetch_text(url_rev)
+            rev_m, cur = _extract_revenue_from_cmc_html(html_rev)
+            url_mg  = f"https://companiesmarketcap.com/{s}/net-profit-margin/"
+            html_mg = _fetch_text(url_mg)
+            mg = _extract_margin_from_cmc_html(html_mg)
+            if rev_m or mg:
+                return (rev_m, mg, cur)
+        return (None, None, None)
+
+    def convert_to_eur_million(value_million: float | None, ccy_symbol: str | None, fx_df: pd.DataFrame) -> float | None:
+        if value_million is None: 
+            return None
+        sym2iso = {"€":"EUR", "$":"USD", "£":"GBP"}
+        iso = sym2iso.get(ccy_symbol, "EUR")
+        fx_map = dict(zip(fx_df["currency"], fx_df["rate_to_eur"]))
+        rate = fx_map.get(iso, 1.0)
+        return round(value_million * rate, 1)
+
+    def ddg_news_titles(keyword: str, n=5) -> list[str]:
+        try:
+            url = f"https://duckduckgo.com/html/?q={quote(keyword)}"
+            html = _fetch_text(url)
+            soup = BeautifulSoup(html, "html.parser")
+            links = soup.select("a.result__a")
+            out = []
+            for a in links[:n]:
+                title = a.get_text(" ", strip=True)
+                if title:
+                    out.append(title)
+            return out
+        except Exception:
+            return []
+
+    def smarter_levers_for(category: str, supplier: str, df_slice: pd.DataFrame) -> list[str]:
+        tips = []
+        cat = (category or "").lower()
+        spend = float(df_slice["_spend_eur"].sum())
+        pos = df_slice.copy()
+        pos["up_eur"] = pd.to_numeric(pos["unit_price"], errors="coerce") * pos["rate_to_eur"]
+        up = pos["up_eur"].dropna()
+        dispersion = (up.quantile(0.9) / max(1e-9, up.quantile(0.1))) if len(up) >= 5 else np.nan
+        sku_cnt = int(pos[resolved_cat_col].count())
+        share = 100.0 * spend / max(1.0, df[df["category_resolved"]==category]["_spend_eur"].sum())
+        if not np.isnan(dispersion) and dispersion > 2.0:
+            tips.append(f"High price dispersion (p90/p10 ≈ {dispersion:.1f}). Standardize specs and rebid low-performing SKUs.")
+        if sku_cnt >= 30:
+            tips.append("Large SKU footprint. Bundle by resin/grade or form factor to unlock volume rebates.")
+        if share > 40:
+            tips.append(f"Supplier concentration {share:.0f}% in this category. Dual-source and threaten panel refresh to reset pricing.")
+        else:
+            tips.append(f"Low concentration with {supplier}. Shift tail volume to best-value suppliers to raise leverage.")
+
+        if any(k in cat for k in ["plastic", "injection", "resin"]):
+            tips += [
+                "Index-link resin (PP/PA/ABS) to Platts/ICIS. If not indexed, claim rebates for resin downticks last 6–12 months.",
+                "Gate-to-gate teardown: reduce cycle times with hot runners or cavity balancing; request molding OEE evidence.",
+                "Tool amortization audit: recover fully-amortized tooling and stop hidden uplift in unit price.",
+            ]
+        elif any(k in cat for k in ["steel", "aluminum", "tube", "metal"]):
+            tips += [
+                "LME/SHFE passthrough audit: enforce a transparent surcharge mechanism and reconcile last 6-month delta.",
+                "Routing change: near-mill blanks or switch to welded tube dimension that avoids waste (>3% yield gain typical).",
+                "Spec simplification: reduce wall-thickness classes; run VA/VE with forming supplier on ±0.1 mm tolerances.",
+            ]
+        elif "rubber" in cat or "seal" in cat or "grommet" in cat:
+            tips += [
+                "Rubber compound benchmarking vs public indices (natural/synthetic). Seek compounding disclosure and alternate recipes.",
+                "Cure-time & scrap study: require SPC proofs; move to flashless molds where volumes justify.",
+                "Switch to standard profiles from catalogue; pay only for cut-to-length + splices.",
+            ]
+        else:
+            tips += [
+                "Run clean-sheet for top 10 SKUs (material, conversion, overheads).",
+                "Bid with structured cost-breakdown templates; pay only for proven extras.",
+            ]
+        news_titles = ddg_news_titles(f"{supplier} {category} price")
+        for t in news_titles[:3]:
+            tips.append(f"Use recent news angle: “{t}”. Leverage in negotiations for timing-based concessions.")
+        seen = set(); out=[]
+        for x in tips:
+            if x not in seen:
+                out.append(x); seen.add(x)
+        return out[:10]
+
+    # ---------- deep dives layout ----------
     st.subheader("Deep Dives")
 
-    # Category selector
     categories_sorted = sorted(df["category_resolved"].dropna().unique().tolist())
-    if not categories_sorted:
-        st.info("No categories detected.")
-        st.stop()
-    cat_selected = st.selectbox("Choose a category", categories_sorted, index=0)
+    cat_pick = st.selectbox("Choose a category", options=categories_sorted, index=0)
 
-    # Aggregation for this category
-    dfx = df[df["category_resolved"]==cat_selected].copy()
-    agg = (dfx.groupby("supplier", dropna=False)
-           .agg(spend_eur=("_spend_eur","sum"), parts=("supplier","nunique"), lines=("supplier","count"))
-           .reset_index().rename(columns={"supplier":"Supplier", "parts":"# Parts", "lines":"# PO Lines"})
-           .sort_values("spend_eur", ascending=False))
-    agg["Spend_M"] = agg["spend_eur"] / 1_000_000.0
+    df_cat = df[df["category_resolved"] == cat_pick].copy()
+    sup_cat = (df_cat.groupby("supplier", dropna=False)
+               .agg(spend_eur=("_spend_eur", "sum"),
+                    parts=("supplier", "count"))
+               .reset_index()
+               .rename(columns={"supplier": "Supplier", "parts": "# Parts"}))
+    sup_cat["Spend (€ M)"] = (sup_cat["spend_eur"] / 1_000_000).round(2)
+    sup_cat = sup_cat.sort_values("spend_eur", ascending=False)
 
-    # Supplier ranking bar
-    st.markdown("### Suppliers by spend in this category")
-    if PLOTLY and not agg.empty:
-        fig = px.bar(
-            agg.head(50), x="Spend_M", y="Supplier", orientation="h",
-            text=agg.head(50)["Spend_M"].map(lambda v: f"€ {v:,.1f} M"),
-            labels={"Spend_M":"Spend (€ M)"},
-            color_discrete_sequence=[P_PRIMARY],
-        )
-        fig.update_traces(textposition="outside", cliponaxis=False)
-        fig.update_layout(
-            height=min(800, max(420, 22*len(agg.head(50)) + 120)),
-            margin=dict(l=10, r=140, t=0, b=10),
-            yaxis=dict(categoryorder="total ascending", automargin=True),
-            xaxis=dict(title="", showgrid=True, zeroline=False, gridcolor="#e5e7eb"),
-            plot_bgcolor="white", paper_bgcolor="white",
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    left, right = st.columns([1.8, 1.2], gap="large")
+
+    with left:
+        st.markdown("### Suppliers in category (ranked by spend)")
+        if PLOTLY and not sup_cat.empty:
+            fig = px.bar(
+                sup_cat.head(30), x="Spend (€ M)", y="Supplier", orientation="h",
+                text=sup_cat.head(30)["Spend (€ M)"].map(lambda v: f"€ {v:,.2f} M"),
+                color_discrete_sequence=[P_PRIMARY],
+            )
+            fig.update_traces(textposition="outside", cliponaxis=False)
+            fig.update_layout(
+                height=600,
+                margin=dict(l=8, r=100, t=10, b=10),
+                yaxis=dict(categoryorder="total ascending", automargin=True),
+                xaxis=dict(title="", showgrid=True, gridcolor="#e5e7eb"),
+                plot_bgcolor="white", paper_bgcolor="white",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.dataframe(sup_cat[["Supplier", "Spend (€ M)", "# Parts"]], use_container_width=True)
+
+    with right:
+        st.markdown("### Supplier overview")
+        sup_options = sup_cat["Supplier"].tolist()
+        sup_pick = st.selectbox("Select a supplier for details", sup_options, index=0) if sup_options else None
+
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("Revenue (EUR million)")
+            rev_m_eur = None
+        with c2:
+            st.caption("Margin (%)")
+            mg_pct = None
+
+        if sup_pick:
+            rev_m, mg, cur_sym = fetch_financials_basic(sup_pick)
+            if rev_m is not None:
+                rev_m_eur = convert_to_eur_million(rev_m, cur_sym, fx)
+            mg_pct = mg
+            c1.metric(label=None, value=("N/A" if rev_m_eur is None else f"{rev_m_eur:,.0f}"))
+            c2.metric(label=None, value=("N/A" if mg_pct is None else f"{mg_pct:.1f}"))
+
+        st.divider()
+
+    st.markdown("### Negotiation & cost-reduction levers (supplier- and category-specific)")
+    if sup_pick:
+        levers = smarter_levers_for(cat_pick, sup_pick, df_cat[df_cat["supplier"] == sup_pick])
+        for i, tip in enumerate(levers, 1):
+            st.markdown(f"- **{i}.** {tip}")
     else:
-        st.info("No suppliers to plot.")
+        st.info("Pick a supplier to see targeted levers.")
+
+    # Keep original diagnostics table
+    st.markdown("### Category diagnostics")
+    def savings_range(cat_val):
+        s = "" if pd.isna(cat_val) else str(cat_val).lower()
+        if "stamp" in s: return (0.10,0.15)
+        if "tube"  in s: return (0.08,0.14)
+        if "plast" in s: return (0.08,0.18)
+        if "steel" in s: return (0.05,0.12)
+        if "log"   in s: return (0.08,0.15)
+        return (0.05,0.10)
+
+    cat2 = (df.groupby("category_resolved", dropna=False)
+           .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
+                suppliers=("supplier", pd.Series.nunique))
+           .reset_index()
+           .rename(columns={"category_resolved":"Category","lines":"# PO Lines"}))
+    cat2["Spend (€ k)"] = fmt_k(cat2["spend_eur"])
+    rngs = [savings_range(c) for c in cat2["Category"]]
+    cat2["Savings Range (%)"]   = [f"{int(a*100)}–{int(b*100)}" for a,b in rngs]
+    cat2["Potential Min (€ k)"] = (cat2["spend_eur"] * [a for a,b in rngs] / 1_000).round(0)
+    cat2["Potential Max (€ k)"] = (cat2["spend_eur"] * [b for a,b in rngs] / 1_000).round(0)
 
     st.dataframe(
-        agg[["Supplier","spend_eur","# Parts","# PO Lines"]].rename(columns={"spend_eur":"Spend (EUR)"}),
-        use_container_width=True
+        cat2[["Category","Spend (€ k)","Savings Range (%)","Potential Min (€ k)","Potential Max (€ k)","# PO Lines"]],
+        use_container_width=True,
+        column_config={
+            "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
+            "Potential Min (€ k)": st.column_config.NumberColumn(format="€ %d k"),
+            "Potential Max (€ k)": st.column_config.NumberColumn(format="€ %d k"),
+        }
     )
 
-    # ------------------------ Supplier overview (web-fetched) ----------------
-    st.markdown("### Supplier overview")
-    sup_list = agg["Supplier"].tolist()
-    sel_supplier = st.selectbox("Select a supplier for details", sup_list, index=0)
-
-    col1, col2, col3 = st.columns([1.3, 1.0, 1.0], gap="large")
-
-    # ===== Web financial fetcher ============================================
-    @st.cache_data(ttl=60*60, show_spinner=True)
-    def fetch_financials_from_web(supplier_name: str, fx_tbl: pd.DataFrame):
-        if not HAVE_WEB:
-            return {"revenue_eur_mil": None, "margin_pct": None, "year": None, "source": ""}
-
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36"}
-        def _get(url):
-            try:
-                r = requests.get(url, headers=headers, timeout=12)
-                if r.status_code == 200 and r.text:
-                    return r.text
-            except Exception:
-                pass
-            return ""
-
-        def _search_ddg(q):
-            url = "https://duckduckgo.com/html/?q=" + requests.utils.quote(q)
-            html_txt = _get(url)
-            if not html_txt: return []
-            soup = BeautifulSoup(html_txt, "html.parser")
-            links = []
-            for a in soup.select("a.result__a"):
-                href = a.get("href")
-                if href and href.startswith("http"):
-                    links.append(href)
-            return links[:8]
-
-        def _fx_rate(iso):
-            iso = (iso or "EUR").upper()
-            try:
-                return float(fx_tbl.loc[fx_tbl["currency"]==iso, "rate_to_eur"].iloc[0])
-            except Exception:
-                return 1.0
-
-        queries = [
-            f'{supplier_name} revenue',
-            f'site:companiesmarketcap.com {supplier_name} revenue',
-            f'site:macrotrends.net {supplier_name} revenue',
-        ]
-        candidate_urls = []
-        for q in queries:
-            candidate_urls.extend(_search_ddg(q))
-
-        keep_domains = ("companiesmarketcap.com", "macrotrends.net", "annualreports.com", "investors.", "ir.")
-        cleaned = []
-        seen = set()
-        for u in candidate_urls:
-            if any(k in u for k in keep_domains):
-                if u not in seen:
-                    cleaned.append(u); seen.add(u)
-
-        money_pat = re.compile(r'(?P<cur>\$|€|£|SEK|NOK|DKK)\s?(?P<num>\d[\d\.,]*)\s*(?P<scale>Billion|Million|bn|mn|billion|million)?', re.I)
-        margin_pat = re.compile(r'(net\s*(profit)?\s*margin[^0-9%]{0,20}|margin[^0-9%]{0,10})\s(?P<mrg>\d{1,2}\.?\d*)\s?%', re.I)
-        year_pat   = re.compile(r'(FY|Year|for\s+the\s+year\s+)\s?(?P<yr>20\d{2})', re.I)
-
-        best = {"revenue_eur_mil": None, "margin_pct": None, "year": None, "source": ""}
-
-        for url in cleaned[:6]:
-            html_txt = _get(url)
-            if not html_txt:
-                continue
-            text = BeautifulSoup(html_txt, "html.parser").get_text(" ", strip=True)
-            text = html.unescape(text)
-
-            if "revenue" in text.lower():
-                idx = text.lower().find("revenue")
-                window = text[idx: idx+600] if idx >= 0 else text[:600]
-                m = money_pat.search(window) or money_pat.search(text[:800])
-                if m:
-                    cur = m.group("cur").upper()
-                    num = m.group("num")
-                    scale = (m.group("scale") or "").lower()
-                    try:
-                        val = float(num.replace(",","").replace(".","", num.count(".")-1))
-                    except Exception:
-                        try: val = float(num.replace(",", "")); 
-                        except Exception: val = None
-                    if val is not None:
-                        if scale in ("billion","bn","b"):
-                            val_mil = val * 1000.0
-                        elif scale in ("million","mn","m"):
-                            val_mil = val
-                        else:
-                            val_mil = val * 1000.0 if val < 50 else val
-                        iso = detect_iso_from_text(cur)
-                        eur_mil = val_mil * _fx_rate(iso)
-                        best["revenue_eur_mil"] = float(f"{eur_mil:.2f}")
-                        best["source"] = url
-
-            mm = margin_pat.search(text)
-            if mm:
-                try: best["margin_pct"] = float(mm.group("mrg"))
-                except Exception: pass
-
-            yy = year_pat.search(text)
-            if yy:
-                try: best["year"] = int(yy.group("yr"))
-                except Exception: pass
-
-            if best["revenue_eur_mil"] is not None:
-                break
-
-        return best
-
-    # ===== News & negotiation signals =======================================
-    @st.cache_data(ttl=2*60*60, show_spinner=False)
-    def fetch_news_headlines(supplier: str, category: str):
-        if not HAVE_WEB:
-            return []
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36"}
-        def _get(url):
-            try:
-                r = requests.get(url, headers=headers, timeout=12)
-                if r.status_code == 200 and r.text:
-                    return r.text
-            except Exception:
-                pass
-            return ""
-
-        def _search_ddg_news(q):
-            url = "https://duckduckgo.com/html/?q=" + requests.utils.quote(q)
-            txt = _get(url)
-            if not txt: return []
-            soup = BeautifulSoup(txt, "html.parser")
-            out = []
-            for res in soup.select(".result"):
-                a = res.select_one("a.result__a")
-                if not a: continue
-                href = a.get("href", "")
-                title = a.get_text(" ", strip=True)
-                snip = res.select_one(".result__snippet")
-                snippet = snip.get_text(" ", strip=True) if snip else ""
-                if href.startswith("http"):
-                    out.append({"title": title, "url": href, "snippet": snippet})
-            return out
-
-        queries = [
-            f'{supplier} {category} price',
-            f'{supplier} {category} capacity',
-            f'{supplier} earnings',
-            f'{category} raw material prices',
-            f'{supplier} strike OR shutdown OR acquisition',
-        ]
-        items = []
-        for q in queries:
-            items.extend(_search_ddg_news(q))
-        # prefer reputable domains
-        good = ("reuters.com","ft.com","bloomberg.com","wsj.com","marketwatch.com","seekingalpha.com","yahoo.com","investors.","ir.")
-        dedup, seen = [], set()
-        for it in items:
-            u = it["url"]
-            dom = re.sub(r"^https?://(www\.)?","",u).split("/")[0]
-            key = (it["title"][:80], dom)
-            if key in seen: continue
-            if any(g in u for g in good):
-                dedup.append(it); seen.add(key)
-        return dedup[:8]
-
-    def craft_levers(category: str, supplier_row: pd.Series, headlines: list):
-        levers = []
-        share = 0.0
-        if supplier_row is not None:
-            cat_total = float(agg["spend_eur"].sum())
-            sup_sp = float(supplier_row["spend_eur"])
-            share = 0.0 if cat_total==0 else sup_sp/cat_total
-            parts = int(supplier_row["# PO Lines"])
-
-        # generic from data shape
-        if share >= 0.30: levers.append("High dependence (>30% category share): prepare dual-source scenario and staged re-allocation.")
-        elif share >= 0.15: levers.append("Moderate dependence: competitive RFQ with peer benchmarks; request MLAs with step-down pricing.")
-        if parts >= 100: levers.append("Large line count: standardize specs & tolerance bands; bundle RFQs to capture scale discounts.")
-
-        # category specific
-        cat = (category or "").lower()
-        if any(k in cat for k in ["plast","poly","rubber"]):
-            levers += [
-                "Resin index clauses (PE/PP/PA) with pass-through & downside sharing; audit conversion & overhead build-ups.",
-                "VA/VE: part consolidation, gate count reduction, cycle-time optimization; family tools where feasible.",
-                "Check market spot quotes for equivalent resin grades and regional arbitrage (EU vs. NA vs. APAC)."
-            ]
-        if any(k in cat for k in ["aluminium","aluminum","steel","metal","bracket","tube"]):
-            levers += [
-                "Link pricing to LME/steel indexes with transparent alloy surcharges; back-test vs. last 12 months.",
-                "Process route review (extrusion vs. machining vs. stamping) and scrap/yield analytics to reclaim value.",
-                "Nearshoring quote to offset freight/energy; explore die sharing or common profiles."
-            ]
-        if "tubes" in cat:
-            levers.append("Straight vs. bended tubes: bend radius/tolerance simplification; welding vs. forming trade-off study.")
-
-        # news-driven nudges
-        text = " ".join([(h.get("title","")+" "+h.get("snippet","")) for h in (headlines or [])]).lower()
-        if any(k in text for k in ["acquisition","merger","m&a","takeover"]):
-            levers.append("Recent M&A: leverage synergy/overlap to seek price harmonization and new-parent rebate.")
-        if any(k in text for k in ["capacity","expansion","new plant","overcapacity"]):
-            levers.append("Capacity additions reported: push for spot/introductory pricing citing supply loosening.")
-        if any(k in text for k in ["shutdown","strike","fire","closure"]):
-            levers.append("Risk event detected: dual-source contingency and safety-stock renegotiation (supplier-funded).")
-        if any(k in text for k in ["price down","decline","softening","deflation","drop in prices","lower prices"]):
-            levers.append("Market softening: request index-linked reductions and immediate list-price rollbacks.")
-
-        # keep unique, readable bullets
-        out = []
-        for L in levers:
-            if L not in out: out.append(L)
-        return out[:8]
-
-    # ---- UI: Financials + stability + override (unchanged from last step) ---
-    with col1:
-        st.caption("Financials (auto web fetch — no APIs)")
-        if not HAVE_WEB:
-            st.info("Install `requests` and `beautifulsoup4` in requirements.txt to enable web fetching.")
-        fetch_clicked = st.button("Fetch from web", use_container_width=True)
-        fetched = None
-        if fetch_clicked and HAVE_WEB:
-            fetched = fetch_financials_from_web(sel_supplier, load_latest_ecb())
-            st.session_state[f"webfin_{sel_supplier.lower()}"] = fetched
-        cached = st.session_state.get(f"webfin_{sel_supplier.lower()}")
-        if fetched is None and cached is not None:
-            fetched = cached
-
-        if fetched:
-            st.success("Fetched")
-            st.metric("Revenue (EUR million)", f"{(fetched.get('revenue_eur_mil') or 0):,.0f}")
-            st.metric("Margin (%)", f"{(fetched.get('margin_pct') or 0):,.1f}")
-            meta = []
-            if fetched.get("year"):  meta.append(f"Year: {fetched['year']}")
-            if fetched.get("source"): meta.append(f"[Source]({fetched['source']})")
-            if meta:
-                st.caption(" • ".join(meta))
-        else:
-            st.info("Click **Fetch from web** to pull revenue/margin (tries CompaniesMarketCap, Macrotrends, investor/IR pages).")
-
-    with col2:
-        sup_row = agg.loc[agg["Supplier"] == sel_supplier].iloc[0] if sel_supplier in agg["Supplier"].values else None
-        sup_spend = float(sup_row["spend_eur"]) if sup_row is not None else 0.0
-        cat_spend = float(agg["spend_eur"].sum())
-        share = 0.0 if cat_spend == 0 else sup_spend / cat_spend
-        lines = int(sup_row["# PO Lines"]) if sup_row is not None else 0
-
-        if share >= 0.30 or lines <= 3:
-            stability = "Caution: high dependence (consider dual-sourcing / re-balancing)"
-        elif share >= 0.15:
-            stability = "Moderate concentration (monitor exposure; prepare alternates)"
-        else:
-            stability = "Balanced exposure (continue to monitor)"
-
-        st.metric("Supplier share in this category", f"{share*100:,.1f}%")
-        st.caption(stability)
-
-    with col3:
-        st.caption("Manual override (optional)")
-        cA, cB = st.columns(2)
-        rev_val = cA.number_input("Revenue (EUR million)", value=0.0, step=10.0, key="ov_rev")
-        mrg_val = cB.number_input("Margin (%)", value=0.0, step=0.5, key="ov_mrg")
-        if st.button("Use override values", use_container_width=True):
-            st.session_state[f"webfin_{sel_supplier.lower()}"] = {
-                "revenue_eur_mil": float(rev_val),
-                "margin_pct": float(mrg_val),
-                "year": None,
-                "source": "",
-            }
-            st.success("Override applied.")
-
-    # ---- NEW: Headlines + Negotiation levers --------------------------------
-    st.markdown("### Negotiation & cost-reduction levers (auto-researched)")
-    news = fetch_news_headlines(sel_supplier, cat_selected) if HAVE_WEB else []
-    bullets = craft_levers(cat_selected, sup_row if sel_supplier in agg["Supplier"].values else None, news)
-
-    if bullets:
-        for b in bullets:
-            st.write(f"- {b}")
-    else:
-        st.write("- Standard RFQ with index-linked clauses; - VA/VE workshop; - Rebalance share to increase competition.")
-
-    if news:
-        with st.expander("Recent market & supplier headlines"):
-            for it in news:
-                title = it["title"]
-                url = it["url"]
-                snippet = it.get("snippet","")
-                st.markdown(f"- [{title}]({url})  \n  <span style='color:#64748b'>{snippet}</span>", unsafe_allow_html=True)
-    else:
-        st.caption("No headlines fetched yet (or blocked by site); try again in a moment.")
-
-# ============================== DOWNLOADS =====================================
+# ============================== DOWNLOADS ===============================
 st.divider()
 st.markdown("#### Download full dataset & summaries (XLSX)")
 buf = io.BytesIO()
