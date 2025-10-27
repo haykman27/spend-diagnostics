@@ -397,40 +397,31 @@ if page == "Dashboard":
     total_categories = int(df["category_resolved"].nunique())
 
     # KPI row — single horizontal row (equal widths)
-    st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Total Spend</div>
-          <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Categories</div>
-          <div class="kpi-value">{total_categories:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Suppliers</div>
-          <div class="kpi-value">{total_suppliers:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">Part Numbers</div>
-          <div class="kpi-value">{part_count:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown(f'''
-        <div class="kpi-card">
-          <div class="kpi-title">PO Lines</div>
-          <div class="kpi-value">{total_lines:,}</div>
-        </div>
-    ''', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
+    kpi_html = f"""
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-title">Total Spend</div>
+        <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Categories</div>
+        <div class="kpi-value">{total_categories:,}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Suppliers</div>
+        <div class="kpi-value">{total_suppliers:,}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">Part Numbers</div>
+        <div class="kpi-value">{part_count:,}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-title">PO Lines</div>
+        <div class="kpi-value">{total_lines:,}</div>
+      </div>
+    </div>
+    """
+    st.markdown(kpi_html, unsafe_allow_html=True)
 
     # Donut left, bar right
     left, right = st.columns([1.05, 2.2], gap="large")
