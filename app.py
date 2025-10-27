@@ -1,8 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer (keep existing UI; fix Supplier×Category Mix order)
+# ProcureIQ — Spend Explorer (Dashboard unchanged; Deep Dives with auto research)
 # ──────────────────────────────────────────────────────────────────────────────
 
-import io, re
+import io, re, math
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -19,17 +19,15 @@ from rapidfuzz import process, fuzz
 st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
 
 # ──────────────────────────── Patch: safe st.metric ───────────────────────────
-# (Prevents crashes when label/value is None anywhere in the app.)
+# Prevent crashes anywhere if label/value ends up None.
 __orig_metric = st.metric
 def __metric_safe(*args, **kwargs):
     if args:
-        # positional usage: st.metric(label, value, ...)
         label = "" if (len(args) < 1 or args[0] is None) else args[0]
         value = "N/A" if (len(args) < 2 or args[1] is None) else args[1]
         new_args = (label, value) + tuple(args[2:])
         return __orig_metric(*new_args, **kwargs)
     else:
-        # keyword usage: st.metric(label=..., value=..., ...)
         label = kwargs.get("label", "")
         value = kwargs.get("value", "N/A")
         kwargs["label"] = "" if label is None else label
@@ -37,6 +35,19 @@ def __metric_safe(*args, **kwargs):
         return __orig_metric(**kwargs)
 st.metric = __metric_safe
 # ──────────────────────────────────────────────────────────────────────────────
+
+# Optional web libs (graceful fallback if missing)
+try:
+    import requests
+except Exception:
+    requests = None
+
+try:
+    from bs4 import BeautifulSoup
+except Exception:
+    BeautifulSoup = None
+
+from urllib.parse import quote
 
 # ============================== THEME / CSS (unchanged) =======================
 P_PRIMARY = "#06b6d4"   # cyan-500
@@ -61,7 +72,7 @@ st.markdown(
       .app-title {{ font-size: 32px; font-weight: 800; letter-spacing: -.02rem; margin: 0; color: {P_TEXT}; }}
       .app-sub   {{ color: {P_TEXT2}; font-size: 14px; margin: 6px 0 0 0; }}
 
-      /* KPI row (same look as before: single horizontal row, equal sizes) */
+      /* KPI row — single horizontal row, equal widths */
       .kpi-grid {{ display:grid; grid-template-columns: repeat(5, 1fr); gap:14px; margin:12px 0 0 0; }}
       .kpi-card {{
         background:#fff;border:1px solid {P_BORDER};border-radius:14px;padding:16px 18px;
@@ -145,7 +156,6 @@ def detect_iso_from_text(text):
 
 @st.cache_data(ttl=6*60*60, show_spinner=False)
 def load_latest_ecb():
-    # FIX: url must be quoted
     url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv"
     fx_wide = pd.read_csv(url)
     fx_wide.rename(columns={"Date":"date"}, inplace=True)
@@ -356,7 +366,7 @@ sup_tot = (df.groupby("supplier", dropna=False)
            .rename(columns={"supplier":"Supplier"}))
 sup_tot["Spend (€ k)"] = fmt_k(sup_tot["spend_eur"])
 
-# Part numbers (unchanged logic you approved earlier)
+# Part numbers (unchanged logic)
 def detect_part_number_cols(df_in):
     norm = {c: c.lower() for c in df_in.columns}
     cues = ["item", "item number", "item no", "material", "material number", "sku", "code", "part", "pn", "material code"]
@@ -386,7 +396,7 @@ if page == "Dashboard":
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    # KPI row — unchanged horizontal layout
+    # KPI row — single horizontal row (equal widths)
     st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
@@ -422,10 +432,10 @@ if page == "Dashboard":
 
     st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
 
-    # Donut left, bar right (unchanged titles/separation)
+    # Donut left, bar right
     left, right = st.columns([1.05, 2.2], gap="large")
 
-    # -------- Donut (unchanged)
+    # Donut
     with left:
         st.markdown('<div class="block-title">Spend by Category</div>', unsafe_allow_html=True)
         donut_raw = (df.groupby("category_resolved", dropna=False)["_spend_eur"].sum()
@@ -444,7 +454,7 @@ if page == "Dashboard":
             other = float(donut_raw["spend_eur"].iloc[st.session_state.donutN:].sum())
             donut_df = pd.concat([topN_df, pd.DataFrame([{"Category":"Other","spend_eur":other}]) if other>0 else pd.DataFrame()], ignore_index=True)
 
-            # color map used ALSO by Supplier×Category Mix (unchanged)
+            # color map reused by Supplier×Category Mix
             if PLOTLY:
                 palette = px.colors.qualitative.Set3
                 cats_in_palette = donut_df["Category"].tolist()
@@ -458,7 +468,7 @@ if page == "Dashboard":
             else:
                 st.dataframe(donut_df, use_container_width=True)
 
-    # -------- Top suppliers bar (unchanged)
+    # Top suppliers (bar)
     with right:
         st.markdown('<div class="block-title">Top Suppliers by Spend</div>', unsafe_allow_html=True)
         top_sup = sup_tot.sort_values("spend_eur", ascending=False).head(20).copy()
@@ -482,16 +492,11 @@ if page == "Dashboard":
         else:
             st.info("No supplier spend to plot yet.")
 
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-    # SUPPLIER × CATEGORY MIX — FIXED to match Top-20 names AND ORDER, legend below
-    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # Supplier × Category Mix (Top 20)
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.markdown('<div class="block-title">Supplier × Category Mix (Top 20 suppliers)</div>', unsafe_allow_html=True)
 
-    # 1) exact same Top-20 suppliers (by name) as above
     top20_suppliers = top_sup["Supplier"].tolist() if 'top_sup' in locals() and not top_sup.empty else []
-
-    # 2) derive the order used by the supplier bar chart:
     if top20_suppliers:
         top20_order_for_mix = (
             sup_tot[sup_tot["Supplier"].isin(top20_suppliers)]
@@ -500,7 +505,6 @@ if page == "Dashboard":
     else:
         top20_order_for_mix = []
 
-    # 3) build the mix strictly from those Top-20 suppliers (same names)
     mix = pd.DataFrame()
     if top20_order_for_mix:
         mix = (
@@ -513,11 +517,8 @@ if page == "Dashboard":
     if PLOTLY and not mix.empty:
         totals = mix.groupby("Supplier")["_spend_eur"].transform("sum")
         mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
-
-        # enforce SAME y-order as the bar chart
         mix["Supplier"] = pd.Categorical(mix["Supplier"], categories=top20_order_for_mix, ordered=True)
 
-        # same colors as donut (fall back if needed)
         if not 'color_map' in locals() or not color_map:
             palette = px.colors.qualitative.Set3
             all_cats = sorted(df["category_resolved"].dropna().unique().tolist())
@@ -539,7 +540,7 @@ if page == "Dashboard":
     else:
         st.info("Mix chart will appear once the Top-20 suppliers are available.")
 
-    # ------------------------ DATA QUALITY (unchanged) ------------------------
+    # Data Quality
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.subheader("Data Quality")
 
@@ -584,40 +585,222 @@ if page == "Dashboard":
     else:
         st.success("No obvious data quality issues found in key fields.")
 
-# ============================== DEEP DIVES (unchanged) ========================
+# ============================== DEEP DIVES (updated) ==========================
 else:
     st.subheader("Deep Dives")
 
-    def savings_range(cat_val):
-        s = "" if pd.isna(cat_val) else str(cat_val).lower()
-        if "stamp" in s: return (0.10,0.15)
-        if "tube"  in s: return (0.08,0.14)
-        if "plast" in s: return (0.08,0.18)
-        if "steel" in s: return (0.05,0.12)
-        if "log"   in s: return (0.08,0.15)
-        return (0.05,0.10)
+    # ---------- Choose Category & Supplier  ----------
+    categories = sorted(df["category_resolved"].dropna().astype(str).unique().tolist())
+    cat_pick = st.selectbox("Choose Category", options=categories, index=0)
 
-    cat2 = (df.groupby("category_resolved", dropna=False)
-           .agg(spend_eur=("_spend_eur","sum"), lines=("category_resolved","count"),
-                suppliers=("supplier", pd.Series.nunique))
-           .reset_index()
-           .rename(columns={"category_resolved":"Category","lines":"# PO Lines"}))
-    cat2["Spend (€ k)"] = fmt_k(cat2["spend_eur"])
+    df_cat = df[df["category_resolved"].astype(str)==str(cat_pick)].copy()
+    suppliers_in_cat = sorted(df_cat["supplier"].dropna().astype(str).unique().tolist())
+    if not suppliers_in_cat:
+        st.warning("No suppliers found for this category.")
+        st.stop()
+    sup_pick = st.selectbox("Choose Supplier", options=suppliers_in_cat, index=0)
 
-    rngs = [savings_range(c) for c in cat2["Category"]]
-    cat2["Savings Range (%)"] = [f"{int(a*100)}–{int(b*100)}" for a,b in rngs]
-    cat2["Potential Min (€ k)"] = (cat2["spend_eur"] * [a for a,b in rngs] / 1_000).round(0)
-    cat2["Potential Max (€ k)"] = (cat2["spend_eur"] * [b for a,b in rngs] / 1_000).round(0)
-
-    st.dataframe(
-        cat2[["Category","Spend (€ k)","Savings Range (%)","Potential Min (€ k)","Potential Max (€ k)","# PO Lines"]],
-        use_container_width=True,
-        column_config={
-            "Spend (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-            "Potential Min (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-            "Potential Max (€ k)": st.column_config.NumberColumn(format="€ %d k"),
-        }
+    # ---------- Spend by Supplier (bar like Top-20, but for chosen category) ----------
+    st.markdown('<div class="block-title">Suppliers in Category (by Spend)</div>', unsafe_allow_html=True)
+    sup_in_cat = (
+        df_cat.groupby("supplier")["_spend_eur"].sum().reset_index()
+        .rename(columns={"supplier":"Supplier","_spend_eur":"spend_eur"})
+        .sort_values("spend_eur", ascending=False)
     )
+    if PLOTLY and not sup_in_cat.empty:
+        sup_in_cat["Spend_M"] = sup_in_cat["spend_eur"]/1_000_000.0
+        figX = px.bar(
+            sup_in_cat, x="Spend_M", y="Supplier", orientation="h",
+            text=sup_in_cat["Spend_M"].map(lambda v: f"€ {v:,.1f} M"),
+            labels={"Spend_M":"Spend (€ M)"},
+            color_discrete_sequence=[P_DEEP],
+        )
+        figX.update_traces(textposition="outside", cliponaxis=False)
+        figX.update_layout(
+            height=max(420, 20*len(sup_in_cat)),
+            margin=dict(l=10, r=160, t=0, b=10),
+            yaxis=dict(categoryorder="total ascending", automargin=True),
+            xaxis=dict(title="", showgrid=True, zeroline=False, gridcolor="#e5e7eb"),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+        st.plotly_chart(figX, use_container_width=True)
+
+    # ---------- Data-derived opportunity analysis for selected supplier ----------
+    df_sup_cat = df_cat[df_cat["supplier"].astype(str)==str(sup_pick)].copy()
+    # Try to identify an item/part column to count PNs
+    part_cols2 = detect_part_number_cols(raw)
+    pn_col = None
+    for c in part_cols2:
+        if c in df_sup_cat.columns and df_sup_cat[c].notna().sum()>0:
+            pn_col = c
+            break
+    pn_count = int(df_sup_cat[pn_col].astype(str).replace({"nan":np.nan,"":np.nan}).nunique()) if pn_col else int(len(df_sup_cat))
+
+    # Compute internal benchmarks
+    df_cat["unit_price_eur"] = pd.to_numeric(df_cat["unit_price"], errors="coerce") * df_cat["rate_to_eur"]
+    df_cat["qty"] = pd.to_numeric(df_cat["quantity"], errors="coerce")
+    df_sup_cat["unit_price_eur"] = pd.to_numeric(df_sup_cat["unit_price"], errors="coerce") * df_sup_cat["rate_to_eur"]
+    df_sup_cat["qty"] = pd.to_numeric(df_sup_cat["quantity"], errors="coerce")
+
+    # per-part average price for supplier and for category
+    def safe_avg_price(d):
+        num = pd.to_numeric(d["unit_price_eur"], errors="coerce")
+        return float(np.nanmean(num)) if len(num)>0 else np.nan
+
+    avg_price_sup = safe_avg_price(df_sup_cat)
+    avg_price_cat = safe_avg_price(df_cat)
+    q1_price_cat  = float(np.nanpercentile(pd.to_numeric(df_cat["unit_price_eur"], errors="coerce").dropna(), 25)) if df_cat["unit_price_eur"].notna().sum()>3 else np.nan
+
+    # ---------- Web research (no keys) ----------
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    }
+
+    def _fetch_text(url: str, timeout=12) -> str:
+        if requests is None:
+            return ""
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=timeout)
+            if r.ok and r.text:
+                return r.text
+        except Exception:
+            pass
+        try:
+            # plain-text proxy fallback
+            r = requests.get(f"https://r.jina.ai/http://{url.replace('https://','').replace('http://','')}",
+                             headers=HEADERS, timeout=timeout)
+            if r.ok and r.text:
+                return r.text
+        except Exception:
+            pass
+        return ""
+
+    def _soup_text(html: str) -> str:
+        if not html:
+            return ""
+        if BeautifulSoup is not None:
+            try:
+                return BeautifulSoup(html, "html.parser").get_text(" ")
+            except Exception:
+                return re.sub("<.*?>", " ", html)
+        return re.sub("<.*?>", " ", html)
+
+    def _clean_number_million(s: str) -> float | None:
+        if not s:
+            return None
+        txt = s.lower().replace(",", "")
+        mult = 1.0
+        if "billion" in txt or " bln" in txt or " bn" in txt:
+            mult = 1_000.0
+        if "€" in txt or " eur" in txt: pass  # still in millions
+        m = re.search(r"([-+]?\d+(\.\d+)?)", txt)
+        if not m:
+            return None
+        return float(m.group(1)) * mult
+
+    def _extract_revenue_and_margin_from_cmc(slug: str):
+        # CompaniesMarketCap pages: /{slug}/revenue/ and /{slug}/net-profit-margin/
+        url_rev = f"https://companiesmarketcap.com/{slug}/revenue/"
+        url_mg  = f"https://companiesmarketcap.com/{slug}/net-profit-margin/"
+        html_r  = _fetch_text(url_rev)
+        html_m  = _fetch_text(url_mg)
+        txtr, txtm = _soup_text(html_r), _soup_text(html_m)
+        rev_m = None
+        if txtr:
+            for key in ["revenue (ttm)", "company made a revenue", "total revenue", "latest financial reports"]:
+                i = txtr.lower().find(key)
+                if i != -1:
+                    rev_m = _clean_number_million(txtr[i:i+300]); break
+            if rev_m is None:
+                i = txtr.lower().find("revenue")
+                if i != -1:
+                    rev_m = _clean_number_million(txtr[max(0, i-120): i+220])
+        mg = None
+        if txtm:
+            m = re.search(r"(net (profit )?margin|operating margin)[^%]*?(\d+(\.\d+)?)\s*%", txtm.lower())
+            if m: mg = float(m.group(3))
+        return rev_m, mg
+
+    def _slugify_for_cmc(name: str) -> list[str]:
+        s = name.lower().replace("&", "and")
+        s = re.sub(r"[^a-z0-9\s\-]", " ", s)
+        s = "-".join([p for p in s.split() if p not in {"group","company","co","sa","ab","ag","gmbh","srl","ltd","plc"}])
+        cands = [s, s.replace("-", ""), s.split("-")[0]]
+        # de-dup & remove empties
+        out, seen = [], set()
+        for c in cands:
+            c = c.strip("-")
+            if c and c not in seen:
+                seen.add(c); out.append(c)
+        return out
+
+    def fetch_financials_basic(name: str):
+        """Return (revenue_million_eur, margin_percent). Best-effort, no keys."""
+        if requests is None:
+            return (None, None)
+        for slug in _slugify_for_cmc(name):
+            rev_m, mg = _extract_revenue_and_margin_from_cmc(slug)
+            if rev_m or mg is not None:
+                # CompaniesMarketCap shows amounts in the page currency; we treat as EUR if symbol present,
+                # otherwise we assume EUR for simplicity. Extend here if you want FX adjust by symbol.
+                return (rev_m, mg)
+        # DuckDuckGo headlines as context (optional)
+        return (None, None)
+
+    rev_m_eur, mg_pct = fetch_financials_basic(sup_pick)
+
+    # ---------- Supplier Overview (metrics) ----------
+    c1, c2, c3 = st.columns([1,1,1])
+    st.metric("Supplier", sup_pick)
+    c1.metric("Revenue (EUR million)", None if rev_m_eur is None else f"{rev_m_eur:,.0f}")
+    c2.metric("Margin (%)", None if mg_pct is None else f"{mg_pct:.1f}")
+    c3.metric("# Part Numbers", pn_count)
+
+    # ---------- Cost-Reduction Ideas (data + web context) ----------
+    st.markdown('<div class="spacer-16"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="block-title">Cost-Reduction & Negotiation Ideas</div>', unsafe_allow_html=True)
+
+    ideas = []
+
+    # Data-driven ideas
+    if not math.isnan(avg_price_sup) and not math.isnan(q1_price_cat):
+        uplift_vs_q1 = (avg_price_sup - q1_price_cat) / q1_price_cat if q1_price_cat>0 else np.nan
+        if uplift_vs_q1 > 0.05:
+            ideas.append(f"Supplier’s average unit price in **{cat_pick}** is ~{uplift_vs_q1*100:.0f}% above category 25th percentile. "
+                         f"Target a price move toward Q1 benchmark: ~€{q1_price_cat:,.2f}/u.")
+    if not math.isnan(avg_price_cat) and not math.isnan(avg_price_sup) and avg_price_sup > avg_price_cat:
+        gap = (avg_price_sup - avg_price_cat)/avg_price_cat*100
+        ideas.append(f"Average price gap vs category mean: **{gap:.0f}%**. Leverage competitive quotes from best-quartile suppliers.")
+
+    # Volume consolidation
+    if pn_count > 10:
+        ideas.append("Consolidate low-volume PNs into fewer specs to win tiered pricing; bundle annual volumes in RFQs.")
+
+    # Material / VAVE heuristics by category name
+    s = str(cat_pick).lower()
+    if "plast" in s or "rubber" in s:
+        ideas += [
+            "Standardize resin grades across PNs; shift to regional equivalents; renegotiate resin index pass-through with lag caps.",
+            "Tooling amortization: request open-book tooling amortization schedules; rebase once recovered.",
+            "Cycle-time reduction: request cavitation/runner/trim time data; target OEE improvements in cost model."
+        ]
+    if "stamping" in s or "metal" in s or "steel" in s:
+        ideas += [
+            "Material surcharge audit vs index (HRC/CRC): cap surcharges; switch to mill-direct where feasible.",
+            "Nesting/scrap: request scrap rates and coil width optimization; share demand to enable slit-width improvements.",
+        ]
+    if "tube" in s or "tubing" in s or "aluminium" in s or "aluminum" in s:
+        ideas += [
+            "Alloy substitution study (e.g., 6061→6063 where specs allow); negotiate extrusion die amortization.",
+            "Secondary ops (cut/bend): move to cellular cells with takt balancing; quote at takt rather than hourly."
+        ]
+
+    # Show ideas
+    if ideas:
+        for i, tip in enumerate(ideas, 1):
+            st.markdown(f"- **Idea {i}:** {tip}")
+    else:
+        st.info("No specific gaps detected from internal data; consider rebidding with best-quartile targets and resin/metal index clauses.")
 
 # ============================== DOWNLOADS (unchanged) =========================
 st.divider()
