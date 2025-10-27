@@ -397,31 +397,22 @@ if page == "Dashboard":
     total_categories = int(df["category_resolved"].nunique())
 
     # KPI row — single horizontal row (equal widths)
-    kpi_html = f"""
-    <div class="kpi-grid">
-      <div class="kpi-card">
-        <div class="kpi-title">Total Spend</div>
-        <div class="kpi-value">€ {total_spend/1_000_000:,.1f}<span class="kpi-unit">M</span></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Categories</div>
-        <div class="kpi-value">{total_categories:,}</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Suppliers</div>
-        <div class="kpi-value">{total_suppliers:,}</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">Part Numbers</div>
-        <div class="kpi-value">{part_count:,}</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-title">PO Lines</div>
-        <div class="kpi-value">{total_lines:,}</div>
-      </div>
-    </div>
-    """
-    st.markdown(kpi_html, unsafe_allow_html=True)
+    k1, k2, k3, k4, k5 = st.columns([1, 1, 1, 1, 1], gap="small")
+
+    with k1:
+        st.metric("Total Spend", f"€ {total_spend/1_000_000:,.1f} M")
+
+    with k2:
+        st.metric("Categories", f"{total_categories:,}")
+
+    with k3:
+        st.metric("Suppliers", f"{total_suppliers:,}")
+
+    with k4:
+        st.metric("Part Numbers", f"{part_count:,}")
+
+    with k5:
+        st.metric("PO Lines", f"{total_lines:,}")
 
     # Donut left, bar right
     left, right = st.columns([1.05, 2.2], gap="large")
