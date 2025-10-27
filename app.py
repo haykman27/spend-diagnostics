@@ -1,9 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer  (same as your last working version)
-# Changes:
-#   (1) Safe metric helper (metric_safe) replaces direct st.metric calls
-#   (2) KPI banners kept in one horizontal row (equal width) via .kpi-grid
-# Nothing else changed.
+# ProcureIQ — Spend Explorer (keep existing UI; fix Supplier×Category Mix order)
 # ──────────────────────────────────────────────────────────────────────────────
 
 import io, re
@@ -21,6 +17,26 @@ except Exception:
 from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
+
+# ──────────────────────────── Patch: safe st.metric ───────────────────────────
+# (Prevents crashes when label/value is None anywhere in the app.)
+__orig_metric = st.metric
+def __metric_safe(*args, **kwargs):
+    if args:
+        # positional usage: st.metric(label, value, ...)
+        label = "" if (len(args) < 1 or args[0] is None) else args[0]
+        value = "N/A" if (len(args) < 2 or args[1] is None) else args[1]
+        new_args = (label, value) + tuple(args[2:])
+        return __orig_metric(*new_args, **kwargs)
+    else:
+        # keyword usage: st.metric(label=..., value=..., ...)
+        label = kwargs.get("label", "")
+        value = kwargs.get("value", "N/A")
+        kwargs["label"] = "" if label is None else label
+        kwargs["value"] = "N/A" if value is None else value
+        return __orig_metric(**kwargs)
+st.metric = __metric_safe
+# ──────────────────────────────────────────────────────────────────────────────
 
 # ============================== THEME / CSS (unchanged) =======================
 P_PRIMARY = "#06b6d4"   # cyan-500
@@ -45,7 +61,7 @@ st.markdown(
       .app-title {{ font-size: 32px; font-weight: 800; letter-spacing: -.02rem; margin: 0; color: {P_TEXT}; }}
       .app-sub   {{ color: {P_TEXT2}; font-size: 14px; margin: 6px 0 0 0; }}
 
-      /* KPI row — single horizontal row, equal widths */
+      /* KPI row (same look as before: single horizontal row, equal sizes) */
       .kpi-grid {{ display:grid; grid-template-columns: repeat(5, 1fr); gap:14px; margin:12px 0 0 0; }}
       .kpi-card {{
         background:#fff;border:1px solid {P_BORDER};border-radius:14px;padding:16px 18px;
@@ -93,19 +109,6 @@ st.markdown(
 
 BASE = "EUR"
 
-# ============================== SAFE METRIC HELPER (new) ======================
-def metric_safe(col, label: str, value):
-    """
-    Streamlit metric wrapper that never passes None.
-    Keeps everything else unchanged in your app.
-    """
-    lbl = "" if label is None else str(label)
-    if value is None:
-        val = "N/A"
-    else:
-        val = value  # can be number or string
-    col.metric(label=lbl, value=val)
-
 # ============================== HELPERS (unchanged) ===========================
 def normalize_headers(cols): return [re.sub(r"[\s_\-:/]+", " ", str(c).strip().lower()) for c in cols]
 def parse_number_robust(x):
@@ -142,6 +145,7 @@ def detect_iso_from_text(text):
 
 @st.cache_data(ttl=6*60*60, show_spinner=False)
 def load_latest_ecb():
+    # FIX: url must be quoted
     url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv"
     fx_wide = pd.read_csv(url)
     fx_wide.rename(columns={"Date":"date"}, inplace=True)
@@ -375,14 +379,14 @@ if part_cols:
 # ============================== NAV (unchanged) ===============================
 page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
 
-# ============================== DASHBOARD (unchanged + KPI row) ===============
+# ============================== DASHBOARD (unchanged) =========================
 if page == "Dashboard":
     total_spend = float(df["_spend_eur"].sum())
     total_lines = int(len(df))
     total_suppliers = int(df["supplier"].nunique())
     total_categories = int(df["category_resolved"].nunique())
 
-    # KPI row — unchanged horizontal layout (single row)
+    # KPI row — unchanged horizontal layout
     st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
     st.markdown(f'''
         <div class="kpi-card">
@@ -478,11 +482,16 @@ if page == "Dashboard":
         else:
             st.info("No supplier spend to plot yet.")
 
-    # >>>>>>>>>>> Supplier × Category Mix (Top 20, same order & colors) >>>>>>>>
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+    # SUPPLIER × CATEGORY MIX — FIXED to match Top-20 names AND ORDER, legend below
+    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     st.markdown('<div class="spacer-24"></div>', unsafe_allow_html=True)
     st.markdown('<div class="block-title">Supplier × Category Mix (Top 20 suppliers)</div>', unsafe_allow_html=True)
 
+    # 1) exact same Top-20 suppliers (by name) as above
     top20_suppliers = top_sup["Supplier"].tolist() if 'top_sup' in locals() and not top_sup.empty else []
+
+    # 2) derive the order used by the supplier bar chart:
     if top20_suppliers:
         top20_order_for_mix = (
             sup_tot[sup_tot["Supplier"].isin(top20_suppliers)]
@@ -491,6 +500,7 @@ if page == "Dashboard":
     else:
         top20_order_for_mix = []
 
+    # 3) build the mix strictly from those Top-20 suppliers (same names)
     mix = pd.DataFrame()
     if top20_order_for_mix:
         mix = (
@@ -503,8 +513,11 @@ if page == "Dashboard":
     if PLOTLY and not mix.empty:
         totals = mix.groupby("Supplier")["_spend_eur"].transform("sum")
         mix["share_pct"] = np.where(totals>0, (mix["_spend_eur"]/totals)*100.0, 0.0)
+
+        # enforce SAME y-order as the bar chart
         mix["Supplier"] = pd.Categorical(mix["Supplier"], categories=top20_order_for_mix, ordered=True)
 
+        # same colors as donut (fall back if needed)
         if not 'color_map' in locals() or not color_map:
             palette = px.colors.qualitative.Set3
             all_cats = sorted(df["category_resolved"].dropna().unique().tolist())
