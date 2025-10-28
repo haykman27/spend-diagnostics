@@ -228,7 +228,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
 # --- Main-page navigation (replaces sidebar radio) ---
 colA, colB = st.columns(2)
 
@@ -248,7 +247,6 @@ with colB:
         f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Deep Dives" else ""}"><span>🔎 Deep Dives</span></div></div>',
         unsafe_allow_html=True
     )
-
 BASE = "EUR"
 
 # ============================== HELPERS (unchanged) ===========================
