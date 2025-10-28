@@ -229,26 +229,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-    # --- Main-page navigation (replaces sidebar radio) ---
-    colA, colB = st.columns(2)
-    
-    # Button-like HTML so we can style the active state; clicks handled by real buttons
-    with colA:
-        if st.button("🏠 Dashboard", use_container_width=True):
-            st.session_state.page = "Dashboard"
-        st.markdown(
-            f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Dashboard" else ""}"><span>🏠 Dashboard</span></div></div>',
-            unsafe_allow_html=True
-        )
-    
-    with colB:
-        if st.button("🔎 Deep Dives", use_container_width=True):
-            st.session_state.page = "Deep Dives"
-        st.markdown(
-            f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Deep Dives" else ""}"><span>🔎 Deep Dives</span></div></div>',
-            unsafe_allow_html=True
-        )
+# --- Main-page navigation (replaces sidebar radio) ---
+colA, colB = st.columns(2)
 
+# Button-like HTML so we can style the active state; clicks handled by real buttons
+with colA:
+    if st.button("🏠 Dashboard", use_container_width=True):
+        st.session_state.page = "Dashboard"
+    st.markdown(
+        f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Dashboard" else ""}"><span>🏠 Dashboard</span></div></div>',
+        unsafe_allow_html=True
+    )
+
+with colB:
+    if st.button("🔎 Deep Dives", use_container_width=True):
+        st.session_state.page = "Deep Dives"
+    st.markdown(
+        f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Deep Dives" else ""}"><span>🔎 Deep Dives</span></div></div>',
+        unsafe_allow_html=True
+    )
 
 BASE = "EUR"
 
