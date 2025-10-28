@@ -186,6 +186,33 @@ st.markdown(
       align-items: stretch; 
       margin: 8px 0 0 0;
     }} 
+        /* Prominent page switch buttons */
+    .winai-nav {{
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin: 8px 0 4px 0;
+    }}
+    .winai-btn {{
+      border-radius: 14px;
+      padding: 14px 16px;
+      font-weight: 800;
+      letter-spacing: .2px;
+      border: 1px solid rgba(14,165,233,0.25);
+      background: linear-gradient(135deg, rgba(14,165,233,0.14), rgba(139,92,246,0.10));
+      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+    }}
+    .winai-btn:hover { transform: translateY(-2px); transition: all .2s ease; }
+    .winai-btn.active {{
+      background: linear-gradient(135deg, rgba(14,165,233,0.22), rgba(139,92,246,0.18));
+      border-color: rgba(14,165,233,0.45);
+      box-shadow: 0 8px 18px rgba(14,165,233,0.18);
+    }}
+    .winai-btn span { font-size: 15px; color: #0f172a; }
+
     </style>
     """,
     unsafe_allow_html=True,
@@ -201,6 +228,27 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+    # --- Main-page navigation (replaces sidebar radio) ---
+    colA, colB = st.columns(2)
+    
+    # Button-like HTML so we can style the active state; clicks handled by real buttons
+    with colA:
+        if st.button("🏠 Dashboard", use_container_width=True):
+            st.session_state.page = "Dashboard"
+        st.markdown(
+            f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Dashboard" else ""}"><span>🏠 Dashboard</span></div></div>',
+            unsafe_allow_html=True
+        )
+    
+    with colB:
+        if st.button("🔎 Deep Dives", use_container_width=True):
+            st.session_state.page = "Deep Dives"
+        st.markdown(
+            f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Deep Dives" else ""}"><span>🔎 Deep Dives</span></div></div>',
+            unsafe_allow_html=True
+        )
+
 
 BASE = "EUR"
 
@@ -471,7 +519,7 @@ if part_cols:
         part_count = int(raw[chosen].astype(str).replace({"nan":np.nan,"":np.nan}).nunique())
 
 # ============================== NAV (unchanged) ===============================
-page = st.sidebar.radio("Navigation", ["Dashboard","Deep Dives"], index=0)
+page = st.session_state.page
 
 # ============================== DASHBOARD (unchanged) =========================
 if page == "Dashboard":
