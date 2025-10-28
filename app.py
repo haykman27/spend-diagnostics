@@ -17,7 +17,7 @@ except Exception:
 from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="WinAI - Your GenAI Copilot for Win Weeks", layout="wide")
-# keep current page in session (for top nav buttons)
+# Keep current page in session (so top buttons can switch pages)
 if "page" not in st.session_state:
     st.session_state.page = "Dashboard"
 
@@ -207,14 +207,23 @@ with hdr_left:
     )
 
 with hdr_right:
-    b1, b2 = st.columns(2)
-    # Active page uses primary; inactive uses secondary
-    with b1:
-        if st.button("🏠 Dashboard", type=("primary" if st.session_state.page=="Dashboard" else "secondary"), use_container_width=True, key="topnav_dash"):
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button(
+            "🏠 Dashboard",
+            type=("primary" if st.session_state.page == "Dashboard" else "secondary"),
+            use_container_width=True,
+            key="topnav_dash",
+        ):
             st.session_state.page = "Dashboard"
             st.rerun()
-    with b2:
-        if st.button("🔎 Deep Dives", type=("primary" if st.session_state.page=="Deep Dives" else "secondary"), use_container_width=True, key="topnav_deep"):
+    with c2:
+        if st.button(
+            "🔎 Deep Dives",
+            type=("primary" if st.session_state.page == "Deep Dives" else "secondary"),
+            use_container_width=True,
+            key="topnav_deep",
+        ):
             st.session_state.page = "Deep Dives"
             st.rerun()
 
