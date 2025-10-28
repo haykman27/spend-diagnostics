@@ -205,13 +205,13 @@ st.markdown(
       cursor: pointer;
       user-select: none;
     }}
-    .winai-btn:hover {{ transform: translateY(-2px); transition: all .2s ease; }}
+    .winai-btn:hover { transform: translateY(-2px); transition: all .2s ease; }
     .winai-btn.active {{
       background: linear-gradient(135deg, rgba(14,165,233,0.22), rgba(139,92,246,0.18));
       border-color: rgba(14,165,233,0.45);
       box-shadow: 0 8px 18px rgba(14,165,233,0.18);
     }}
-    .winai-btn span {{ font-size: 15px; color: #0f172a; }}
+    .winai-btn span { font-size: 15px; color: #0f172a; }
 
     </style>
     """,
