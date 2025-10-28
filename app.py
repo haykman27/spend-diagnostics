@@ -17,6 +17,10 @@ except Exception:
 from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="WinAI - Your GenAI Copilot for Win Weeks", layout="wide")
+# keep current page in session (for top nav buttons)
+if "page" not in st.session_state:
+    st.session_state.page = "Dashboard"
+
 
 # ──────────────────────────── Patch: safe st.metric ───────────────────────────
 # Prevent crashes anywhere if label/value ends up None.
@@ -188,16 +192,31 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ============================== HEADER (unchanged) ============================
-st.markdown(
-    """
-    <div class="banner">
-      <div class="app-title">WinAI - Your GenAI Copilot for Win Weeks</div>
-      <div class="app-sub">Upload your spend cube, map columns in the sidebar, pick the category source, and explore.</div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+# ============================== HEADER + TOP NAV (new) =======================
+hdr_left, hdr_right = st.columns([0.65, 0.35], gap="large")
+
+with hdr_left:
+    st.markdown(
+        """
+        <div class="banner">
+          <div class="app-title">WinAI - Your GenAI Copilot for Win Weeks</div>
+          <div class="app-sub">Upload your spend cube, map columns in the sidebar, pick the category source, and explore.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with hdr_right:
+    b1, b2 = st.columns(2)
+    # Active page uses primary; inactive uses secondary
+    with b1:
+        if st.button("🏠 Dashboard", type=("primary" if st.session_state.page=="Dashboard" else "secondary"), use_container_width=True, key="topnav_dash"):
+            st.session_state.page = "Dashboard"
+            st.rerun()
+    with b2:
+        if st.button("🔎 Deep Dives", type=("primary" if st.session_state.page=="Deep Dives" else "secondary"), use_container_width=True, key="topnav_deep"):
+            st.session_state.page = "Deep Dives"
+            st.rerun()
 
 BASE = "EUR"
 
