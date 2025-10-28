@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# ProcureIQ — Spend Explorer (Dashboard unchanged; Deep Dives with auto research)
+# WinAI - Your GenAI Copilot for Win Weeks (Dashboard unchanged; Deep Dives with auto research)
 # ──────────────────────────────────────────────────────────────────────────────
 
 import io, re, math
@@ -16,7 +16,7 @@ except Exception:
 
 from rapidfuzz import process, fuzz
 
-st.set_page_config(page_title="ProcureIQ — Spend Explorer", layout="wide")
+st.set_page_config(page_title="WinAI - Your GenAI Copilot for Win Weeks", layout="wide")
 
 # ──────────────────────────── Patch: safe st.metric ───────────────────────────
 # Prevent crashes anywhere if label/value ends up None.
@@ -192,7 +192,7 @@ st.markdown(
 st.markdown(
     """
     <div class="banner">
-      <div class="app-title">ProcureIQ — Spend Explorer</div>
+      <div class="app-title">WinAI - Your GenAI Copilot for Win Weeks</div>
       <div class="app-sub">Upload your spend cube, map columns in the sidebar, pick the category source, and explore.</div>
     </div>
     """,
