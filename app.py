@@ -263,6 +263,29 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ── Top tabs: Dashboard | Deep Dives | Downloads ──────────────────────────────
+st.markdown('<div class="winai-tabs">', unsafe_allow_html=True)
+c1, c2, c3 = st.columns(3)
+
+def tab(label: str, icon: str, target: str, col):
+    is_active = (st.session_state.page == target)
+    with col:
+        if is_active:
+            clicked = st.button(f"{icon} {label}", type="primary", use_container_width=True)
+        else:
+            with st.container():
+                st.markdown('<div class="inactive">', unsafe_allow_html=True)
+                clicked = st.button(f"{icon} {label}", type="secondary", use_container_width=True, key=f"tab_{target}")
+                st.markdown('</div>', unsafe_allow_html=True)
+        if clicked and not is_active:
+            st.session_state.page = target
+            st.rerun()
+
+tab("Dashboard", "🏠", "Dashboard", c1)
+tab("Deep Dives", "🔎", "Deep Dives", c2)
+tab("Downloads", "⬇️", "Downloads", c3)
+st.markdown('</div>', unsafe_allow_html=True)
+
 BASE = "EUR"
 
 # ============================== HELPERS (unchanged) ===========================
