@@ -436,7 +436,7 @@ cat = (df.groupby("category_resolved", dropna=False)
             lines=("category_resolved","count"),
             suppliers=("supplier", pd.Series.nunique))
        .reset_index()
-       .rename(columns={"category_resolved":"Category","lines":"# PO Lines","suppliers":"# Suppliers"}))
+       .rename(columns={"category_resolved":"Category","lines":"# POs","suppliers":"# Suppliers"}))
 cat["Spend (€ k)"] = fmt_k(cat["spend_eur"])
 
 sup_tot = (df.groupby("supplier", dropna=False)
@@ -493,7 +493,7 @@ if page == "Dashboard":
         st.metric("Part Numbers", f"{part_count:,}")
 
     with k5:
-        st.metric("PO Lines", f"{total_lines:,}")
+        st.metric("POs", f"{total_lines:,}")
 
     # Donut left, bar right
     left, right = st.columns([1.05, 2.2], gap="large")
