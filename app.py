@@ -17,7 +17,10 @@ except Exception:
 from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="WinAI - Your GenAI Copilot for Win Weeks", layout="wide")
-
+# Keep track of which page we're on (Dashboard / Deep Dives)
+if "page" not in st.session_state:
+    st.session_state.page = "Dashboard"
+    
 # ──────────────────────────── Patch: safe st.metric ───────────────────────────
 # Prevent crashes anywhere if label/value ends up None.
 __orig_metric = st.metric
