@@ -205,7 +205,7 @@ st.markdown(
       cursor: pointer;
       user-select: none;
     }}
-    .winai-btn:hover { transform: translateY(-2px); transition: all .2s ease; }
+    .winai-btn:hover {{ transform: translateY(-2px); transition: all .2s ease; }}
     .winai-btn.active {{
       background: linear-gradient(135deg, rgba(14,165,233,0.22), rgba(139,92,246,0.18));
       border-color: rgba(14,165,233,0.45);
