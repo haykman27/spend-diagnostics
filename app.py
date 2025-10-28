@@ -135,6 +135,54 @@ st.markdown(
       .dq-val {{ font-weight: 800; font-size: 16px; color: {P_TEXT}; }}
 
       [data-testid="stSidebar"] {{ min-width: 360px; max-width: 400px; }}
+    
+    /********* Make native st.metric look like gradient cards *********/
+    [data-testid="stMetric"] {{
+      background: linear-gradient(135deg, rgba(14,165,233,0.12), rgba(139,92,246,0.10));
+      border: 1px solid rgba(14,165,233,0.25);
+      border-radius: 16px;
+      padding: 16px 18px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+    }}
+    
+    /* Small label (top line) */
+    [data-testid="stMetric"] > div:nth-child(1) {{
+      color: #334155;                 /* slate-700 */
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      font-size: .9rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }}
+    
+    /* Big number */
+    [data-testid="stMetric"] > div:nth-child(2) {{
+      color: #0f172a;                 /* slate-900 */
+      font-weight: 800;
+      font-size: 2rem;
+      letter-spacing: -0.02rem;
+    }}
+    
+    /* Optional delta (if you ever use it) */
+    [data-testid="stMetricDelta"] {{
+      font-weight: 700;
+    }}
+    
+    /* Subtle hover */
+    [data-testid="stMetric"]:hover {{
+      transform: translateY(-2px);
+      box-shadow: 0 8px 18px rgba(14,165,233,0.18);
+      transition: all .25s ease;
+    }}
+    
+    /* Grid row that keeps five metrics aligned & evenly spaced */
+    .kpi-row {{ 
+      display: grid; 
+      grid-template-columns: repeat(5, 1fr); 
+      gap: 14px; 
+      align-items: stretch; 
+      margin: 8px 0 0 0;
+    }} 
     </style>
     """,
     unsafe_allow_html=True,
