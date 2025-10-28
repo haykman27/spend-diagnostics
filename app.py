@@ -211,7 +211,7 @@ st.markdown(
       border-color: rgba(14,165,233,0.45);
       box-shadow: 0 8px 18px rgba(14,165,233,0.18);
     }}
-    .winai-btn span { font-size: 15px; color: #0f172a; }
+    .winai-btn span {{ font-size: 15px; color: #0f172a; }}
 
     </style>
     """,
