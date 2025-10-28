@@ -213,40 +213,6 @@ st.markdown(
     }}
     .winai-btn span {{ font-size: 15px; color: #0f172a; }}
 
-    /* Top page-tabs (buttons) */
-    .winai-tabs {{
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
-      margin: 6px 0 14px 0;
-    }}
-    
-    .winai-tabs .stButton>button {{
-      width: 100%;
-      border-radius: 12px;
-      padding: 12px 14px;
-      font-weight: 700;
-      border: 1px solid #e2e8f0;
-      background: #ffffff;
-      color: #0f172a;
-      box-shadow: 0 1px 2px rgba(2,8,23,.04);
-      transition: transform .15s ease;
-    }}
-    
-    .winai-tabs .stButton>button:hover {{ transform: translateY(-1px); }}
-    
-    /* Active tab uses Streamlit primary style (type='primary'), tweak slightly */
-    [data-testid="baseButton-primary"] {{
-      background: linear-gradient(135deg, rgba(14,165,233,.16), rgba(139,92,246,.10));
-      border-color: #bae6fd;
-    }}
-    
-    /* Make inactive tabs feel recessed */
-    .winai-tabs .inactive>div>button {{
-      opacity: .85;
-      background: #f8fafc;
-    }}
-
     </style>
     """,
     unsafe_allow_html=True,
@@ -262,30 +228,25 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+# --- Main-page navigation (replaces sidebar radio) ---
+colA, colB = st.columns(2)
 
-# ── Top tabs: Dashboard | Deep Dives | Downloads ──────────────────────────────
-st.markdown('<div class="winai-tabs">', unsafe_allow_html=True)
-c1, c2, c3 = st.columns(3)
+# Button-like HTML so we can style the active state; clicks handled by real buttons
+with colA:
+    if st.button("🏠 Dashboard", use_container_width=True):
+        st.session_state.page = "Dashboard"
+    st.markdown(
+        f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Dashboard" else ""}"><span>🏠 Dashboard</span></div></div>',
+        unsafe_allow_html=True
+    )
 
-def tab(label: str, icon: str, target: str, col):
-    is_active = (st.session_state.page == target)
-    with col:
-        if is_active:
-            clicked = st.button(f"{icon} {label}", type="primary", use_container_width=True)
-        else:
-            with st.container():
-                st.markdown('<div class="inactive">', unsafe_allow_html=True)
-                clicked = st.button(f"{icon} {label}", type="secondary", use_container_width=True, key=f"tab_{target}")
-                st.markdown('</div>', unsafe_allow_html=True)
-        if clicked and not is_active:
-            st.session_state.page = target
-            st.rerun()
-
-tab("Dashboard", "🏠", "Dashboard", c1)
-tab("Deep Dives", "🔎", "Deep Dives", c2)
-tab("Downloads", "⬇️", "Downloads", c3)
-st.markdown('</div>', unsafe_allow_html=True)
-
+with colB:
+    if st.button("🔎 Deep Dives", use_container_width=True):
+        st.session_state.page = "Deep Dives"
+    st.markdown(
+        f'<div class="winai-nav"><div class="winai-btn {"active" if st.session_state.page=="Deep Dives" else ""}"><span>🔎 Deep Dives</span></div></div>',
+        unsafe_allow_html=True
+    )
 BASE = "EUR"
 
 # ============================== HELPERS (unchanged) ===========================
