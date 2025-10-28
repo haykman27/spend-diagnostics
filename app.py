@@ -111,7 +111,7 @@ st.markdown(
         font-size: 1.1rem;
         color: #475569;
         margin-left: .3rem;
-      }
+      }}
       .kpi-title {{ font-size:.95rem;color:{P_TEXT2};margin-bottom:8px; }}
       .kpi-value {{ font-size:1.8rem;font-weight:800;letter-spacing:-.02rem; white-space:nowrap; }}
       .kpi-unit  {{ font-weight:700; font-size:1.1rem; color:{P_TEXT2}; margin-left:.3rem; }}
