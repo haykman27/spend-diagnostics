@@ -75,7 +75,7 @@ st.markdown(
       /* KPI row — single horizontal row, equal widths */
       .kpi-grid {{ display:grid; grid-template-columns: repeat(5, 1fr); gap:14px; margin:12px 0 0 0; }}
       /* KPI cards — modern gradient background, hover animation */
-      .kpi-card {
+      .kpi-card {{
         background: linear-gradient(135deg, rgba(14,165,233,0.12), rgba(139,92,246,0.10));
         border: 1px solid rgba(14,165,233,0.25);
         border-radius: 18px;
@@ -86,27 +86,27 @@ st.markdown(
         flex-direction: column;
         justify-content: center;
         transition: all 0.25s ease;
-      }
-      .kpi-card:hover {
+      }}
+      .kpi-card:hover {{
         transform: translateY(-4px);
         box-shadow: 0 8px 18px rgba(14,165,233,0.2);
         border-color: rgba(14,165,233,0.4);
-      }
-      .kpi-title {
+      }}
+      .kpi-title {{
         font-size: 0.95rem;
         color: #334155;
         margin-bottom: 8px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: .5px;
-      }
-      .kpi-value {
+      }}
+      .kpi-value {{
         font-size: 2rem;
         font-weight: 800;
         letter-spacing: -0.02rem;
         color: #0f172a;
-      }
-      .kpi-unit {
+      }}
+      .kpi-unit {{
         font-weight: 700;
         font-size: 1.1rem;
         color: #475569;
