@@ -237,7 +237,7 @@ def detect_iso_from_text(text):
 
 @st.cache_data(ttl=6*60*60, show_spinner=False)
 def load_latest_ecb():
-    url = https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv
+    url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv"
     fx_wide = pd.read_csv(url)
     fx_wide.rename(columns={"Date":"date"}, inplace=True)
     fx_wide["date"] = pd.to_datetime(fx_wide["date"], errors="coerce")
@@ -730,7 +730,7 @@ else:
             pass
         try:
             # plain-text proxy fallback
-            r = requests.get(fhttps://r.jina.ai/http://{url.replace('https://','').replace('http://','')},
+            r = requests.get(f"https://r.jina.ai/http://{url.replace('https://','').replace('http://','')}",
                              headers=HEADERS, timeout=timeout)
             if r.ok and r.text:
                 return r.text
@@ -763,8 +763,8 @@ else:
 
     def _extract_revenue_and_margin_from_cmc(slug: str):
         # CompaniesMarketCap pages: /{slug}/revenue/ and /{slug}/net-profit-margin/
-        url_rev = fhttps://companiesmarketcap.com/{slug}/revenue/
-        url_mg  = fhttps://companiesmarketcap.com/{slug}/net-profit-margin/
+        url_rev = f"https://companiesmarketcap.com/{slug}/revenue/"
+        url_mg  = f"https://companiesmarketcap.com/{slug}/net-profit-margin/"
         html_r  = _fetch_text(url_rev)
         html_m  = _fetch_text(url_mg)
         txtr, txtm = _soup_text(html_r), _soup_text(html_m)
