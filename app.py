@@ -17,10 +17,6 @@ except Exception:
 from rapidfuzz import process, fuzz
 
 st.set_page_config(page_title="WinAI - Your GenAI Copilot for Win Weeks", layout="wide")
-# Keep current page in session (so top buttons can switch pages)
-if "page" not in st.session_state:
-    st.session_state.page = "Dashboard"
-
 
 # ──────────────────────────── Patch: safe st.metric ───────────────────────────
 # Prevent crashes anywhere if label/value ends up None.
@@ -192,40 +188,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ============================== HEADER + TOP NAV (new) =======================
-hdr_left, hdr_right = st.columns([0.65, 0.35], gap="large")
-
-with hdr_left:
-    st.markdown(
-        """
-        <div class="banner">
-          <div class="app-title">WinAI - Your GenAI Copilot for Win Weeks</div>
-          <div class="app-sub">Upload your spend cube, map columns in the sidebar, pick the category source, and explore.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-with hdr_right:
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button(
-            "🏠 Dashboard",
-            type=("primary" if st.session_state.page == "Dashboard" else "secondary"),
-            use_container_width=True,
-            key="topnav_dash",
-        ):
-            st.session_state.page = "Dashboard"
-            st.rerun()
-    with c2:
-        if st.button(
-            "🔎 Deep Dives",
-            type=("primary" if st.session_state.page == "Deep Dives" else "secondary"),
-            use_container_width=True,
-            key="topnav_deep",
-        ):
-            st.session_state.page = "Deep Dives"
-            st.rerun()
+# ============================== HEADER (unchanged) ============================
+st.markdown(
+    """
+    <div class="banner">
+      <div class="app-title">WinAI - Your GenAI Copilot for Win Weeks</div>
+      <div class="app-sub">Upload your spend cube, map columns in the sidebar, pick the category source, and explore.</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 BASE = "EUR"
 
@@ -265,7 +237,7 @@ def detect_iso_from_text(text):
 
 @st.cache_data(ttl=6*60*60, show_spinner=False)
 def load_latest_ecb():
-    url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv"
+    url = https://www.ecb.europa.eu/stats/eurofxref/eurofxref-hist.csv
     fx_wide = pd.read_csv(url)
     fx_wide.rename(columns={"Date":"date"}, inplace=True)
     fx_wide["date"] = pd.to_datetime(fx_wide["date"], errors="coerce")
@@ -758,7 +730,7 @@ else:
             pass
         try:
             # plain-text proxy fallback
-            r = requests.get(f"https://r.jina.ai/http://{url.replace('https://','').replace('http://','')}",
+            r = requests.get(fhttps://r.jina.ai/http://{url.replace('https://','').replace('http://','')},
                              headers=HEADERS, timeout=timeout)
             if r.ok and r.text:
                 return r.text
@@ -791,8 +763,8 @@ else:
 
     def _extract_revenue_and_margin_from_cmc(slug: str):
         # CompaniesMarketCap pages: /{slug}/revenue/ and /{slug}/net-profit-margin/
-        url_rev = f"https://companiesmarketcap.com/{slug}/revenue/"
-        url_mg  = f"https://companiesmarketcap.com/{slug}/net-profit-margin/"
+        url_rev = fhttps://companiesmarketcap.com/{slug}/revenue/
+        url_mg  = fhttps://companiesmarketcap.com/{slug}/net-profit-margin/
         html_r  = _fetch_text(url_rev)
         html_m  = _fetch_text(url_mg)
         txtr, txtm = _soup_text(html_r), _soup_text(html_m)
